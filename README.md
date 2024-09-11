@@ -54,6 +54,17 @@ The **DLMM Data Collector** is an advanced script designed to gather, analyze, a
 - **Dynamic Timeframe Optimization:** Evaluates timeframes from 30m to 24h ⏰
 - **Risk Profile Adjustment:** Customizes strategy based on your profile ⚖️
 
+
+
+📦 Requirements
+Refer to requirements.txt for a list of Python dependencies, including:
+
+requests
+pandas & numpy
+arch
+rich
+⚠️ Disclaimer
+This script is for informational purposes only. Always conduct your own research and consider your risk tolerance before making investment decisions.
 ---
 
 ### 🛠️ Usage
@@ -86,5 +97,7 @@ python dlmm_data_collector.py
 - Run as a background process:
   ```bash
   nohup python dlmm_data_collector.py &
+
+
 
 
