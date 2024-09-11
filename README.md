@@ -63,6 +63,10 @@ requests
 pandas & numpy
 arch
 rich
+
+
+
+
 ⚠️ Disclaimer
 This script is for informational purposes only. Always conduct your own research and consider your risk tolerance before making investment decisions.
 ---
