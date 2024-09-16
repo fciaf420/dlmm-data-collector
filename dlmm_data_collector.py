@@ -8,39 +8,43 @@ import logging
 import os
 from rich.console import Console
 from rich.logging import RichHandler
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.panel import Panel
 from rich.text import Text
 from rich.live import Live
-from rich.align import Align
 from rich.table import Table
 from rich.box import ROUNDED
 from ratelimit import limits, sleep_and_retry
 from requests.exceptions import RequestException
 import random
 import sys
-import csv
-from multiprocessing import Pool
-from arch import arch_model
-import select
-import platform
 import traceback
 import msvcrt
+from scipy import stats
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from dtaidistance import dtw
+from pykalman import KalmanFilter
+from arch import arch_model
+from json import JSONEncoder
 
-# Set up rich console
+# Set up rich console and logging
 console = Console()
-
-# Set up logging with rich
-logging.basicConfig(
-    level="INFO",
-    format="%(message)s",
-    datefmt="[%X]",
-    handlers=[RichHandler(rich_tracebacks=True, console=console)]
-)
-
+logging.basicConfig(level="INFO", format="%(message)s", datefmt="[%X]", 
+                    handlers=[RichHandler(rich_tracebacks=True, console=console)])
 log = logging.getLogger("rich")
 
 BASE_URL = "https://api.geckoterminal.com/api/v2"
+
+class NumpyEncoder(JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return JSONEncoder.default(self, obj)
 
 def exponential_backoff(attempt):
     return min(30, (2 ** attempt) + random.uniform(0, 1))
@@ -76,22 +80,15 @@ def get_pool_info(network, pool_address):
 def get_ohlcv_data(network, pool_address):
     ohlcv_data = {}
     timeframes = [
-        ('day', 1, 30),  # 30 days of daily data
-        ('hour', 4, 42),  # 7 days of 4-hourly data
-        ('hour', 1, 24)  # 24 hours of hourly data
+        ('day', 1, 30), ('hour', 4, 42), ('hour', 1, 24)
     ]
     for timeframe, aggregate, limit in timeframes:
         url = f"{BASE_URL}/networks/{network}/pools/{pool_address}/ohlcv/{timeframe}"
-        params = {
-            'aggregate': aggregate,
-            'limit': limit,
-            'currency': 'usd',
-            'token': 'base'
-        }
+        params = {'aggregate': aggregate, 'limit': limit, 'currency': 'usd', 'token': 'base'}
         try:
             response = call_api_with_retry(url, params)
             ohlcv_data[timeframe] = response
-            time.sleep(2)  # Add a 2-second delay between OHLCV requests
+            time.sleep(2)
         except Exception as e:
             log.error(f"Failed to get OHLCV data for {pool_address} ({timeframe}): {str(e)}")
     return ohlcv_data
@@ -112,12 +109,7 @@ def calculate_ohlcv_metrics(ohlcv_data):
         avg_volume = np.mean(volumes)
         volatility = np.std(np.log(np.array(closes[1:]) / np.array(closes[:-1])))
         
-        if timeframe == 'day':
-            period = '30d'
-        elif timeframe == 'hour' and len(ohlcv_list) > 24:
-            period = '7d'
-        else:
-            period = '24h'
+        period = '30d' if timeframe == 'day' else '7d' if timeframe == 'hour' and len(ohlcv_list) > 24 else '24h'
         
         metrics.update({
             f'avg_{timeframe}_volume': avg_volume,
@@ -127,52 +119,6 @@ def calculate_ohlcv_metrics(ohlcv_data):
         })
     return metrics
 
-def get_volume_column(timeframe_minutes):
-    timeframe_minutes = int(timeframe_minutes)
-    if timeframe_minutes <= 5:
-        return 'volume_5m'
-    elif timeframe_minutes <= 60:
-        return 'volume_1h'
-    elif timeframe_minutes <= 360:
-        return 'volume_6h'
-    else:
-        return 'volume_24h'
-
-def get_price_change_column(timeframe_minutes):
-    timeframe_minutes = int(timeframe_minutes)
-    if timeframe_minutes <= 5:
-        return 'price_change_5m'
-    elif timeframe_minutes <= 60:
-        return 'price_change_1h'
-    elif timeframe_minutes <= 360:
-        return 'price_change_6h'
-    else:
-        return 'price_change_24h'
-
-def calculate_metrics(timeframe, data):
-    price_col = get_price_change_column(timeframe)
-    volume_col = get_volume_column(timeframe)
-    
-    if isinstance(data, pd.DataFrame):
-        avg_price_change = data[price_col].mean()
-        avg_volume = data[volume_col].mean()
-        volatility = data[price_col].std()
-    else:  # Single row
-        avg_price_change = data[price_col]
-        avg_volume = data[volume_col]
-        volatility = 0  # Cannot calculate volatility for a single point
-    
-    # Avoid division by zero
-    if volatility != 0:
-        sharpe_ratio = avg_price_change / volatility
-    else:
-        sharpe_ratio = 0
-    
-    volume_adjusted_change = avg_price_change * (avg_volume ** 0.5)
-    score = (sharpe_ratio * 0.4) + (volume_adjusted_change * 0.6)
-    
-    return {'timeframe': timeframe, 'score': score, 'sharpe_ratio': sharpe_ratio, 'avg_price_change': avg_price_change, 'volatility': volatility, 'avg_volume': avg_volume}
-
 class DataManager:
     def __init__(self):
         self.df = None
@@ -181,13 +127,11 @@ class DataManager:
     def load_data(self):
         if self.df is None or (datetime.now() - self.last_update) > timedelta(minutes=30):
             console.print("Loading data from CSV file...")
-            self.df = pd.read_csv('meme_coin_data.csv', on_bad_lines='skip')
+            self.df = pd.read_csv('meme_coin_data.csv')
             console.print(f"Loaded {len(self.df)} rows of data")
             
-            # Convert timestamp column to datetime, handling errors
             self.df['timestamp'] = pd.to_datetime(self.df['timestamp'], errors='coerce')
             
-            # Drop rows with invalid timestamps
             invalid_timestamps = self.df['timestamp'].isnull()
             if invalid_timestamps.any():
                 console.print(f"[yellow]Dropped {invalid_timestamps.sum()} rows with invalid timestamps[/yellow]")
@@ -197,8 +141,7 @@ class DataManager:
             console.print("Data loading complete")
 
     def get_recent_data(self):
-        # Return data from the last 7 days
-        seven_days_ago = datetime.now() - timedelta(days=7)
+        seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
         return self.df[self.df['timestamp'] > seven_days_ago]
 
 data_manager = DataManager()
@@ -226,22 +169,22 @@ def collect_data():
                 pool_address = pool_attributes.get('address', 'Unknown')
                 status.update(f"[cyan]Processing pool {index}: {token_name}")
                 
-                # Get detailed pool info
                 pool_info = get_pool_info(network, pool_address)
-                
-                # Get OHLCV data
                 ohlcv_data = get_ohlcv_data(network, pool_address)
-                
-                # Calculate additional metrics
                 metrics = calculate_ohlcv_metrics(ohlcv_data)
                 
+                current_time = datetime.now(timezone.utc)
+                pool_created_at = datetime.fromisoformat(pool_attributes.get('pool_created_at', current_time.isoformat()))
+                pool_age_hours = (current_time - pool_created_at).total_seconds() / 3600
+
                 pool_data = {
-                    'timestamp': datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f"),
+                    'timestamp': current_time.isoformat(),
                     'token_name': token_name,
                     'network': network,
                     'token_price': float(pool_attributes.get('base_token_price_usd', 0)),
                     'market_cap': float(pool_attributes.get('market_cap_usd', 0) or 0),
-                    'fdv_usd': float(pool_attributes.get('fdv_usd', 0) or 0),
+                    'fdv': float(pool_attributes.get('fdv_usd', 0) or 0),
+                    'liquidity': float(pool_attributes.get('reserve_in_usd', 0) or 0),
                     'volume_5m': float(pool_attributes.get('volume_usd', {}).get('m5', 0) or 0),
                     'volume_1h': float(pool_attributes.get('volume_usd', {}).get('h1', 0) or 0),
                     'volume_6h': float(pool_attributes.get('volume_usd', {}).get('h6', 0) or 0),
@@ -250,24 +193,26 @@ def collect_data():
                     'price_change_1h': float(pool_attributes.get('price_change_percentage', {}).get('h1', 0) or 0),
                     'price_change_6h': float(pool_attributes.get('price_change_percentage', {}).get('h6', 0) or 0),
                     'price_change_24h': float(pool_attributes.get('price_change_percentage', {}).get('h24', 0) or 0),
-                    'pool_created_at': pool_attributes.get('pool_created_at'),
-                    'pool_age_hours': (datetime.now(timezone.utc) - datetime.fromisoformat(pool_attributes.get('pool_created_at', datetime.now(timezone.utc).isoformat()))).total_seconds() / 3600,
-                    'reserve_in_usd': float(pool_attributes.get('reserve_in_usd', 0) or 0),
                     'transactions_5m_buys': pool_attributes.get('transactions', {}).get('m5', {}).get('buys', 0),
                     'transactions_5m_sells': pool_attributes.get('transactions', {}).get('m5', {}).get('sells', 0),
                     'transactions_1h_buys': pool_attributes.get('transactions', {}).get('h1', {}).get('buys', 0),
                     'transactions_1h_sells': pool_attributes.get('transactions', {}).get('h1', {}).get('sells', 0),
+                    'transactions_6h_buys': pool_attributes.get('transactions', {}).get('h6', {}).get('buys', 0),
+                    'transactions_6h_sells': pool_attributes.get('transactions', {}).get('h6', {}).get('sells', 0),
                     'transactions_24h_buys': pool_attributes.get('transactions', {}).get('h24', {}).get('buys', 0),
                     'transactions_24h_sells': pool_attributes.get('transactions', {}).get('h24', {}).get('sells', 0),
+                    'pool_created_at': pool_created_at.isoformat(),
+                    'pool_age_hours': pool_age_hours,
                 }
                 
-                # Add additional metrics from OHLCV data
+                pool_data['market_cap'] = pool_data['market_cap'] or pool_data['fdv']
+                
                 pool_data.update(metrics)
-                
+
                 all_data.append(pool_data)
-                console.print(f"[green]Processed {token_name}: Price ${pool_data['token_price']:.6f}, Market Cap ${pool_data['market_cap']:,.2f}[/green]")
+                console.print(f"Processed {token_name} / {network.upper()}: Price ${pool_data['token_price']:.6f}, Market Cap/FDV ${pool_data['market_cap']:,.2f}")
                 
-                time.sleep(5)  # Add a 5-second delay between processing each pool
+                time.sleep(5)
             except KeyError as e:
                 log.warning(f"Skipping token {token_name} due to missing data: {str(e)}")
                 skipped_tokens.append(token_name)
@@ -277,459 +222,365 @@ def collect_data():
                 console.print(f"[red]Error processing pool {pool_attributes.get('address', 'Unknown')}: {str(e)}[/red]")
                 console.print(f"[yellow]Pool attributes: {json.dumps(pool_attributes, indent=2)}[/yellow]")
 
-    # After collecting all data
     df = pd.DataFrame(all_data)
     
-    # Check if the CSV file already exists
     file_exists = os.path.isfile('meme_coin_data.csv')
     
-    # If the file doesn't exist, write with header. If it exists, append without header
     if not file_exists:
         df.to_csv('meme_coin_data.csv', mode='w', header=True, index=False)
         console.print(f"[green]Created new meme_coin_data.csv with {len(df)} records[/green]")
     else:
-        # Read the existing CSV to get the current columns
-        existing_df = pd.read_csv('meme_coin_data.csv', nrows=0)
-        existing_columns = set(existing_df.columns)
-        
-        # Check if there are any new columns in the current data
-        new_columns = set(df.columns) - existing_columns
-        
-        if new_columns:
-            # If there are new columns, we need to rewrite the entire file
-            old_df = pd.read_csv('meme_coin_data.csv')
-            combined_df = pd.concat([old_df, df], ignore_index=True)
-            combined_df.to_csv('meme_coin_data.csv', mode='w', header=True, index=False)
-            console.print(f"[green]Updated meme_coin_data.csv with new columns and added {len(df)} new records[/green]")
-        else:
-            # If no new columns, simply append the new data
-            df.to_csv('meme_coin_data.csv', mode='a', header=False, index=False)
-            console.print(f"[green]Appended {len(df)} new records to meme_coin_data.csv[/green]")
+        df.to_csv('meme_coin_data.csv', mode='a', header=False, index=False)
+        console.print(f"[green]Appended {len(df)} new records to meme_coin_data.csv[/green]")
 
     console.print(f"[yellow]Skipped {len(skipped_tokens)} tokens due to missing data: {', '.join(skipped_tokens)}[/yellow]")
+    
+    data_manager.load_data()
 
-def get_timeframe_input():
-    timeframe_options = {
-        '1': 30, '2': 60, '3': 120, '4': 180, '5': 360, '6': 720, '7': 1440
+def multifactor_score(data):
+    factors = {
+        'price_momentum': data['price_change_1h'],
+        'volume_trend': np.where((data['volume_24h'] > 0) & (data['volume_1h'] > 0), data['volume_1h'] / data['volume_24h'], 0),
+        'market_cap_rank': data['effective_market_cap'].rank(ascending=False),
+        'volatility': implement_garch(data, 60),  # 1-hour GARCH volatility
+        'liquidity_ratio': np.where((data['effective_market_cap'] > 0) & (data['volume_24h'] > 0), data['volume_24h'] / data['effective_market_cap'], 0)
     }
-    console.print("\n[bold cyan]Select your timeframe for LP pool:[/bold cyan]")
-    console.print("1. 30 minutes")
-    console.print("2. 60 minutes")
-    console.print("3. 2 hours")
-    console.print("4. 3 hours")
-    console.print("5. 6 hours")
-    console.print("6. 12 hours")
-    console.print("7. 24 hours")
-    
-    while True:
-        choice = console.input("Enter your choice (1-7): ")
-        if choice in timeframe_options:
-            return timeframe_options[choice]
-        else:
-            console.print("[red]Invalid choice. Please enter a number between 1 and 7.[/red]")
+    weights = {k: 1/len(factors) for k in factors.keys()}  # Equal weights to start
+    return sum(factors[k] * weights[k] for k in factors)
 
-def get_risk_mode_input():
-    console.print("\n[bold cyan]Choose your preferred mode:[/bold cyan]")
-    console.print("1. Degen (Higher risk, more opportunities)")
-    console.print("2. Moderate (Balanced risk and opportunities)")
-    console.print("3. Conservative (Lower risk, fewer opportunities)")
+def implement_garch(df, timeframe_minutes):
+    price_col = 'price_change_1h'  # Use 1-hour price changes
     
-    while True:
-        mode_choice = console.input("Enter your choice (1-3): ")
-        if mode_choice in ['1', '2', '3']:
-            return ['degen', 'moderate', 'conservative'][int(mode_choice) - 1]
-        else:
-            console.print("[red]Invalid choice. Please enter a number between 1 and 3.[/red]")
-
-def calculate_constrained_stop_loss(token_data, mode):
-    price_changes = [
-        abs(token_data.get('price_change_5m', 0)),
-        abs(token_data.get('price_change_1h', 0)),
-        abs(token_data.get('price_change_6h', 0)),
-        abs(token_data.get('price_change_24h', 0))
-    ]
-    max_price_change = max(price_changes)
+    price_data = df[price_col].dropna()
+    returns = np.log(price_data + 1).diff().dropna()
     
-    # Adjust risk factors to spread across the 10% to 50% range
-    risk_factors = {'degen': 0.8, 'moderate': 1.0, 'conservative': 1.2}
-    risk_factor = risk_factors[mode]
-    
-    # Scale the max_price_change to fit within our desired range
-    scaled_change = (max_price_change / 100) * 40  # Scale to 0-40% range
-    base_stop_loss = 10 + scaled_change  # Shift to 10-50% range
-    
-    # Apply risk factor and constrain to 10-50% range
-    stop_loss_percentage = max(10, min(base_stop_loss * risk_factor, 50))
-    
-    return -stop_loss_percentage  # Return as a negative percentage
-
-def explain_recommendations(recommendations, mode, df_recent):
-    explanations = {}
-    risk_factors = {'degen': 1.2, 'moderate': 1.0, 'conservative': 0.8}
-    risk_factor = risk_factors[mode]
-
-    for criterion, value in recommendations.items():
-        if criterion == 'Min Token 5 Min Price Change (%)':
-            explanations[criterion] = f"""
-            Mathematical basis: 10th percentile of 5-minute price changes, adjusted for risk.
-            Raw 10th percentile: {df_recent['price_change_5m'].quantile(0.1):.2f}%
-            Risk adjustment: {value / (df_recent['price_change_5m'].quantile(0.1) * risk_factor):.2f}x
-            This threshold helps filter out tokens in rapid short-term decline.
-            """
-        elif criterion == 'Min Token 1 HR Price Change (%)':
-            explanations[criterion] = f"""
-            Mathematical basis: 10th percentile of 1-hour price changes, adjusted for risk.
-            Raw 10th percentile: {df_recent['price_change_1h'].quantile(0.1):.2f}%
-            Risk adjustment: {value / (df_recent['price_change_1h'].quantile(0.1) * risk_factor):.2f}x
-            This threshold identifies potential entry points while avoiding significant short-term declines.
-            """
-        elif criterion == 'Max Token 1 HR Price Change (%)':
-            explanations[criterion] = f"""
-            Mathematical basis: 90th percentile of 1-hour price changes, adjusted for risk.
-            Raw 90th percentile: {df_recent['price_change_1h'].quantile(0.9):.2f}%
-            Risk adjustment: {value / (df_recent['price_change_1h'].quantile(0.9) * risk_factor):.2f}x
-            This upper limit helps avoid entering during potential unsustainable price spikes.
-            """
-        elif criterion == 'Min Token 1 HR Volume':
-            explanations[criterion] = f"""
-            Mathematical basis: 25th percentile of 1-hour volumes, with a minimum threshold.
-            Raw 25th percentile: ${df_recent['volume_1h'].quantile(0.25):,.0f}
-            Adjusted value: max(25th percentile * risk factor, $50,000)
-            This ensures sufficient short-term liquidity for safer entry and exit.
-            """
-        elif criterion == 'Min Token 24 Hrs Volume':
-            explanations[criterion] = f"""
-            Mathematical basis: 25th percentile of 24-hour volumes, with a minimum threshold.
-            Raw 25th percentile: ${df_recent['volume_24h'].quantile(0.25):,.0f}
-            Adjusted value: max(25th percentile * risk factor, $975,000)
-            This ensures sustained market interest and overall liquidity.
-            """
-        elif criterion == 'Min Token Age (hrs)':
-            explanations[criterion] = f"""
-            Mathematical basis: 10th percentile of token ages, adjusted for risk.
-            Raw 10th percentile: {df_recent['pool_age_hours'].quantile(0.1):.1f} hours
-            Risk adjustment: {value / (df_recent['pool_age_hours'].quantile(0.1) * risk_factor):.2f}x
-            This helps avoid very new, potentially unstable tokens.
-            """
-        elif criterion == 'Min Token Market Cap':
-            valid_market_caps = df_recent['market_cap'][(df_recent['market_cap'] > 100000) & (df_recent['market_cap'] < 1e9)]
-            market_cap_10th_percentile = valid_market_caps.quantile(0.10)
-            explanations[criterion] = f"""
-            Mathematical basis: 10th percentile of market caps between $100K and $1B, adjusted for risk.
-            Raw 10th percentile: ${market_cap_10th_percentile:,.0f}
-            Adjusted value: max(10th percentile * risk factor, $200,000)
-            This balances opportunity with stability across the strategy's price bins.
-            """
-        elif criterion == 'Stop Loss (%)':
-            explanations[criterion] = f"""
-            Mathematical basis: Average of individual token stop losses based on historical volatility.
-            Calculation: For each token, max(10%, min((max_price_change * 0.4 + 10) * risk factor, 50%))
-            This adaptive stop loss balances protection against excessive losses with room for normal price fluctuations.
-            """
-
-    return explanations
-
-def get_current_recommendations(timeframe_minutes, mode, df_recent):
-    console.print(Panel(Text(f"Generating optimized recommendations for DLMM entry criteria (Timeframe: {timeframe_minutes} minutes)...", style="bold blue")))
+    if len(returns) < 100:
+        console.print(f"[yellow]Warning: Insufficient data for GARCH modeling. Using standard deviation.[/yellow]")
+        return returns.std() if len(returns) > 1 else 0  # Return 0 if there's only one or no data point
     
     try:
-        # Validate data
-        required_columns = ['price_change_5m', 'price_change_1h', 'price_change_6h', 'price_change_24h', 
-                            'volume_5m', 'volume_1h', 'volume_6h', 'volume_24h', 'pool_age_hours', 'market_cap']
-        missing_columns = [col for col in required_columns if col not in df_recent.columns]
-        if missing_columns:
-            raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")
+        model = arch_model(returns, vol='GARCH', p=1, q=1)
+        results = model.fit(disp='off')
+        forecast = results.forecast(horizon=1)
+        volatility_forecast = np.sqrt(forecast.variance.values[-1, :])[0]
         
-        # Remove rows with NaN values in required columns
-        df_recent = df_recent.dropna(subset=required_columns)
-        
-        if df_recent.empty:
-            raise ValueError("No valid data remaining after removing NaN values")
-        
-        # Sort by timestamp and keep only the most recent entry for each token
-        df_recent = df_recent.sort_values('timestamp', ascending=False).groupby('token_name').first().reset_index()
-        
-        # Calculate scores for the entire dataframe
-        metrics = calculate_metrics(timeframe_minutes, df_recent)
-        df_recent['score'] = metrics['score']
-        
-        # Sort tokens by score and get the top performers (adjust the number as needed)
-        top_performers = df_recent.sort_values('score', ascending=False).head(30)
-        
-        # Calculate recommendations based on top performers
-        recommendations = {
-            'Min Token 5 Min Price Change (%)': top_performers['price_change_5m'].quantile(0.10),
-            'Min Token 1 HR Price Change (%)': top_performers['price_change_1h'].quantile(0.10),
-            'Max Token 1 HR Price Change (%)': top_performers['price_change_1h'].quantile(0.90),
-            'Min Token 1 HR Volume': top_performers['volume_1h'].quantile(0.25),
-            'Min Token 24 Hrs Volume': top_performers['volume_24h'].quantile(0.25),
-            'Min Token Age (hrs)': top_performers['pool_age_hours'].quantile(0.10)
-        }
-
-        # Adjust Market Cap calculation
-        valid_market_caps = top_performers['market_cap'][(top_performers['market_cap'] > 100000) & (top_performers['market_cap'] < 1e9)]
-        market_cap_10th_percentile = valid_market_caps.quantile(0.10)
-        
-        risk_factors = {'degen': 1.2, 'moderate': 1.0, 'conservative': 0.8}
-        risk_factor = risk_factors[mode]
-        
-        min_market_cap = max(market_cap_10th_percentile * risk_factor, 200000)
-        
-        recommendations['Min Token Market Cap'] = round(min_market_cap, -3)  # Round to nearest thousand
-
-        # Adjust based on risk mode
-        for key in recommendations:
-            if key != 'Min Token Market Cap':  # Skip market cap as it's already adjusted
-                recommendations[key] *= risk_factor
-
-        # Round values for better readability
-        recommendations['Min Token 5 Min Price Change (%)'] = max(round(recommendations['Min Token 5 Min Price Change (%)'], 2), -10)
-        recommendations['Min Token 1 HR Price Change (%)'] = max(round(recommendations['Min Token 1 HR Price Change (%)'], 2), -30)
-        recommendations['Max Token 1 HR Price Change (%)'] = min(round(recommendations['Max Token 1 HR Price Change (%)'], 2), 500)
-        recommendations['Min Token 1 HR Volume'] = max(round(recommendations['Min Token 1 HR Volume'], -3), 50000)
-        recommendations['Min Token 24 Hrs Volume'] = max(round(recommendations['Min Token 24 Hrs Volume'], -3), 975000)
-        recommendations['Min Token Age (hrs)'] = max(round(recommendations['Min Token Age (hrs)'], 1), 2)
-
-        # Calculate stop loss
-        stop_losses = []
-        for _, token in top_performers.iterrows():
-            stop_loss = calculate_constrained_stop_loss(token, mode)
-            stop_losses.append(stop_loss)
-
-        # Calculate average stop loss
-        avg_stop_loss = np.mean(stop_losses)
-        recommendations['Stop Loss (%)'] = round(avg_stop_loss, 2)
-
-        # Generate explanations
-        explanations = explain_recommendations(recommendations, mode, df_recent)
-
-        # Display recommendations with explanations
-        console.print(f"\n[bold green]Optimized DLMM Entry Criteria ({mode} mode):[/bold green]")
-        for setting, value in recommendations.items():
-            if 'Volume' in setting or 'Market Cap' in setting:
-                formatted_value = f"${value:,.0f}"
-            elif 'Age' in setting:
-                formatted_value = f"{value:.1f}"
-            else:
-                formatted_value = f"{value:.2f}%"
-            console.print(f"[cyan]{setting}:[/cyan] {formatted_value}")
-            console.print(f"[yellow]{explanations[setting]}[/yellow]\n")
-
-        return recommendations
-
+        console.print(f"[green]Successfully calculated GARCH volatility: {volatility_forecast:.4f}[/green]")
+        return volatility_forecast
     except Exception as e:
-        console.print(f"[red]An error occurred while generating recommendations: {str(e)}[/red]")
-        console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")
+        console.print(f"[yellow]Warning: GARCH modeling failed. Using standard deviation. Error: {str(e)}[/yellow]")
+        return returns.std() if len(returns) > 1 else 0  # Return 0 if there's only one or no data point
+
+def find_similar_patterns(current_data, historical_data):
+    distances = [dtw.distance(current_data, hist) for hist in historical_data]
+    return np.argmin(distances)
+
+def kalman_trend(prices):
+    kf = KalmanFilter(transition_matrices=[1], observation_matrices=[1], 
+                      initial_state_mean=0, initial_state_covariance=1, 
+                      observation_covariance=1, transition_covariance=.01)
+    return kf.filter(prices)[0].flatten()
+
+def estimate_tail_risk(returns, threshold=0.05):
+    try:
+        # Remove non-finite values
+        valid_returns = returns[np.isfinite(returns)]
+        
+        if len(valid_returns) < 10:  # Arbitrary minimum number of samples
+            console.print("[yellow]Warning: Not enough valid data for tail risk estimation.[/yellow]")
+            return None, None
+
+        tail_returns = valid_returns[valid_returns < np.quantile(valid_returns, threshold)]
+        
+        if len(tail_returns) < 5:  # Another arbitrary minimum
+            console.print("[yellow]Warning: Not enough tail data for estimation.[/yellow]")
+            return None, None
+
+        shape, _, scale = stats.genpareto.fit(tail_returns)
+        return shape, scale
+    except Exception as e:
+        console.print(f"[yellow]Warning: Error in tail risk estimation - {str(e)}[/yellow]")
+        return None, None
+
+def feature_importance(X, y):
+    try:
+        # Remove rows with infinite or NaN values
+        mask = np.isfinite(X).all(axis=1) & np.isfinite(y)
+        X_clean = X[mask]
+        y_clean = y[mask]
+
+        if len(X_clean) < 10:  # Arbitrary minimum number of samples
+            console.print("[yellow]Warning: Not enough valid data for feature importance calculation.[/yellow]")
+            return None
+
+        rf = RandomForestRegressor(n_estimators=100, random_state=42)
+        rf.fit(X_clean, y_clean)
+        return rf.feature_importances_
+    except Exception as e:
+        console.print(f"[yellow]Warning: Error in feature importance calculation - {str(e)}[/yellow]")
         return None
 
-def save_recommendations(recommendations):
-    if isinstance(recommendations, dict):
-        recommendations_dict = {
+def prepare_data_for_timeframe(df, timeframe_minutes):
+    base_columns = ['price_change_5m', 'price_change_1h', 'volume_1h', 'volume_24h', 'pool_age_hours', 'market_cap', 'fdv']
+    
+    price_change_col = f'price_change_{timeframe_minutes}m' if timeframe_minutes < 1440 else 'price_change_24h'
+    
+    required_columns = base_columns + [price_change_col]
+    
+    if price_change_col not in df.columns:
+        df[price_change_col] = df['price_change_24h'] * (timeframe_minutes / 1440)
+    
+    # Use FDV as fallback for market cap, and set a minimum value
+    df['effective_market_cap'] = df['market_cap'].fillna(df['fdv']).fillna(1000)
+    df['effective_market_cap'] = df['effective_market_cap'].clip(lower=1000)
+    
+    # Ensure volume columns are non-negative
+    df['volume_1h'] = df['volume_1h'].clip(lower=0)
+    df['volume_24h'] = df['volume_24h'].clip(lower=0)
+    
+    df_prepared = df[required_columns + ['effective_market_cap']].dropna(subset=['effective_market_cap'])
+    
+    # Filter out tokens with market cap less than $1000
+    df_prepared = df_prepared[df_prepared['effective_market_cap'] >= 1000]
+    
+    # Instead of removing, let's set a minimum value for pool age
+    df_prepared['pool_age_hours'] = df_prepared['pool_age_hours'].clip(lower=0)
+    
+    if df_prepared.empty:
+        console.print(f"[yellow]Warning: No valid data for {timeframe_minutes} minute timeframe after removing NaN values[/yellow]")
+        return None
+    
+    return df_prepared
+
+def get_current_recommendations(timeframe_minutes, mode, df_recent):
+    log.info(f"Generating recommendations for {timeframe_minutes} minute timeframe in {mode} mode")
+    
+    try:
+        df_prepared = prepare_data_for_timeframe(df_recent, timeframe_minutes)
+        if df_prepared is None:
+            raise ValueError(f"Insufficient data for {timeframe_minutes} minute timeframe")
+        
+        df_prepared = df_prepared.reset_index(drop=True)
+        
+        risk_factors = {'degen': 1.5, 'moderate': 1.2, 'conservative': 1.0}
+        risk_factor = risk_factors[mode]
+        log.info(f"Applied risk factor: {risk_factor}")
+        
+        # Calculate metrics
+        df_prepared['multifactor_score'] = multifactor_score(df_prepared)
+        df_prepared['kalman_trend'] = kalman_trend(df_prepared['price_change_1h'])
+        
+        returns = df_prepared['price_change_1h'].pct_change().dropna()
+        shape, scale = estimate_tail_risk(returns)
+        
+        top_performers = df_prepared.sort_values('multifactor_score', ascending=False).head(30)
+        
+        recommendations = {}
+        explanations = {}
+        
+        # Price change calculations
+        for col, percentile in [('price_change_5m', 0.10), ('price_change_1h', 0.10)]:
+            raw_value = df_prepared[col].quantile(percentile)
+            adjusted_value = round(raw_value * risk_factor, 2)
+            recommendations[f'Min Token {col.split("_")[2].upper()} Price Change (%)'] = adjusted_value
+            explanations[f'Min Token {col.split("_")[2].upper()} Price Change (%)'] = f"""
+            Raw {percentile*100}th percentile: {raw_value:.2f}%
+            Risk adjustment: {risk_factor:.2f}x
+            Final value: {adjusted_value:.2f}%
+            """
+            log.info(f"Calculated {col} change: raw={raw_value:.2f}, adjusted={adjusted_value:.2f}")
+        
+        # Max 1 HR Price Change
+        max_price_change = min(round(df_prepared['price_change_1h'].quantile(0.95) * risk_factor, 2), 500)
+        recommendations['Max Token 1 HR Price Change (%)'] = max_price_change
+        explanations['Max Token 1 HR Price Change (%)'] = f"""
+        Raw 95th percentile: {df_prepared['price_change_1h'].quantile(0.95):.2f}%
+        Risk adjustment: {risk_factor:.2f}x
+        Capped at 500%
+        Final value: {max_price_change:.2f}%
+        """
+        log.info(f"Calculated max 1 HR price change: {max_price_change:.2f}")
+        
+        # Volume calculations
+        for col, threshold in [('volume_1h', 50000), ('volume_24h', 50000)]:
+            raw_value = top_performers[col].quantile(0.25)
+            risk_adjusted = round(raw_value * risk_factor, -3)
+            final_value = max(risk_adjusted, threshold)
+            recommendations[f'Min Token {col.split("_")[1].upper()} Volume'] = final_value
+            explanations[f'Min Token {col.split("_")[1].upper()} Volume'] = f"""
+            Raw 25th percentile: ${raw_value:,.0f}
+            Risk-adjusted value: ${risk_adjusted:,.0f}
+            Minimum threshold: ${threshold:,.0f}
+            Final value: ${final_value:,.0f}
+            """
+            log.info(f"Calculated {col}: raw={raw_value:.0f}, adjusted={risk_adjusted:.0f}, final={final_value:.0f}")
+        
+        # Token Age
+        raw_age = top_performers['pool_age_hours'].quantile(0.10)
+        adjusted_age = round(raw_age * risk_factor, 1)
+        final_age = max(adjusted_age, 2)
+        recommendations['Min Token Age (hrs)'] = final_age
+        explanations['Min Token Age (hrs)'] = f"""
+        Raw 10th percentile: {raw_age:.1f} hours
+        Risk-adjusted value: {adjusted_age:.1f} hours
+        Minimum threshold: 2 hours
+        Final value: {final_age:.1f} hours
+        """
+        log.info(f"Calculated token age: raw={raw_age:.1f}, adjusted={adjusted_age:.1f}, final={final_age:.1f}")
+        
+        # Diagnostic logging for market cap
+        log.info(f"Market cap statistics:")
+        log.info(f"Min: ${df_prepared['effective_market_cap'].min():,.0f}")
+        log.info(f"Max: ${df_prepared['effective_market_cap'].max():,.0f}")
+        log.info(f"Mean: ${df_prepared['effective_market_cap'].mean():,.0f}")
+        log.info(f"Median: ${df_prepared['effective_market_cap'].median():,.0f}")
+        
+        # Market Cap calculation
+        raw_mcap = top_performers['effective_market_cap'].quantile(0.10)
+        log.info(f"Raw 10th percentile market cap: ${raw_mcap:,.0f}")
+        raw_mcap = max(raw_mcap, 1000)  # Ensure minimum of $1000
+        log.info(f"Raw market cap after minimum applied: ${raw_mcap:,.0f}")
+        adjusted_mcap = raw_mcap * risk_factor
+        log.info(f"Risk-adjusted market cap: ${adjusted_mcap:,.0f}")
+        adjusted_mcap = round(max(adjusted_mcap, 1000), -3)  # Ensure minimum of $1000 after risk adjustment
+        log.info(f"Risk-adjusted market cap after rounding: ${adjusted_mcap:,.0f}")
+        final_mcap = max(adjusted_mcap, 200000)
+        log.info(f"Final market cap after applying $200,000 minimum: ${final_mcap:,.0f}")
+
+        recommendations['Min Token Market Cap'] = final_mcap
+        explanations['Min Token Market Cap'] = f"""
+        Raw 10th percentile: ${raw_mcap:,.0f}
+        Risk-adjusted value: ${adjusted_mcap:,.0f}
+        Minimum threshold: $200,000
+        Final value: ${final_mcap:,.0f}
+        Note: {"Using minimum threshold due to low market cap values" if final_mcap == 200000 else ""}
+        """
+        
+        # Additional metrics
+        if shape is not None and scale is not None:
+            recommendations['Tail Risk Shape'] = shape
+            recommendations['Tail Risk Scale'] = scale
+            explanations['Tail Risk Shape'] = f"Estimated shape parameter: {shape:.4f}"
+            explanations['Tail Risk Scale'] = f"Estimated scale parameter: {scale:.4f}"
+            log.info(f"Calculated tail risk: shape={shape:.4f}, scale={scale:.4f}")
+        
+        # Consistency check
+        inconsistencies = check_consistency(recommendations, explanations)
+        if inconsistencies:
+            log.warning("Inconsistencies found between recommendations and explanations:")
+            for key, (rec_value, exp_value) in inconsistencies.items():
+                log.warning(f"{key}: Recommendation={rec_value}, Explanation={exp_value}")
+        
+        return recommendations, explanations
+    
+    except Exception as e:
+        log.error(f"An error occurred while generating recommendations: {str(e)}")
+        log.error(f"Traceback: {traceback.format_exc()}")
+        return None, None
+
+def check_consistency(recommendations, explanations):
+    inconsistencies = {}
+    for key in recommendations:
+        if key in explanations:
+            rec_value = recommendations[key]
+            exp_lines = explanations[key].split('\n')
+            exp_value = None
+            for line in exp_lines:
+                if 'Final value:' in line:
+                    value_str = line.split(':')[-1].strip()
+                    if '$' in value_str:
+                        # Handle dollar amounts
+                        exp_value = float(value_str.replace('$', '').replace(',', ''))
+                    elif '%' in value_str:
+                        # Handle percentages
+                        exp_value = float(value_str.replace('%', ''))
+                    elif 'hours' in value_str:
+                        # Handle time durations
+                        exp_value = float(value_str.split()[0])
+                    else:
+                        # Handle other numeric values
+                        exp_value = float(value_str)
+                    break
+            
+            if exp_value is not None:
+                # Compare values based on their type
+                if isinstance(rec_value, (int, float)) and isinstance(exp_value, (int, float)):
+                    if abs(rec_value - exp_value) > 0.01:  # Allow small float discrepancies
+                        inconsistencies[key] = (rec_value, exp_value)
+                elif rec_value != exp_value:
+                    inconsistencies[key] = (rec_value, exp_value)
+    
+    return inconsistencies
+
+def display_recommendations(recommendations, explanations):
+    console.print(f"\n[bold green]Optimized DLMM Entry Criteria:[/bold green]")
+    for setting, value in recommendations.items():
+        if 'Volume' in setting or 'Market Cap' in setting:
+            formatted_value = f"${value:,.0f}"
+        elif 'Age' in setting:
+            formatted_value = f"{value:.1f} hours"
+        elif 'Tail Risk' in setting or 'Pattern Index' in setting:
+            formatted_value = f"{value:.4f}"
+        else:
+            formatted_value = f"{value:.2f}%"
+        console.print(f"[cyan]{setting}:[/cyan] {formatted_value}")
+        console.print(f"[yellow]{explanations[setting]}[/yellow]\n")
+
+def save_recommendations(recommendations, explanations):
+    if isinstance(recommendations, dict) and isinstance(explanations, dict):
+        data_to_save = {
             "timestamp": datetime.now().isoformat(),
-            "recommendations": recommendations
+            "recommendations": recommendations,
+            "explanations": explanations
         }
         
         filename = 'dlmm_recommendations.json'
         with open(filename, 'w') as f:
-            json.dump(recommendations_dict, f, indent=4)
-        console.print(f"\n[green]Recommendations saved to {filename}[/green]")
+            json.dump(data_to_save, f, indent=4, cls=NumpyEncoder)
+        console.print(f"\n[green]Recommendations and explanations saved to {filename}[/green]")
     else:
-        console.print("\n[yellow]No recommendations to save.[/yellow]")
-
-def implement_garch(df, timeframes):
-    volatilities = {}
-    for timeframe in map(int, timeframes):
-        price_col = get_price_change_column(timeframe)
-        
-        # Ensure we're working with a copy of the data
-        price_data = df[[price_col]].copy()
-        
-        # Remove any NaN or inf values
-        price_data = price_data.replace([np.inf, -np.inf], np.nan).dropna()
-        
-        # Calculate returns, removing any remaining NaN or inf values
-        epsilon = 1e-8  # Small constant to avoid divide by zero
-        returns = np.log(price_data + epsilon) - np.log(price_data.shift(1) + epsilon)
-        returns = returns.replace([np.inf, -np.inf], np.nan).dropna()
-        
-        # Check if we have enough data points after cleaning
-        if len(returns) < 100:
-            console.print(f"[yellow]Warning: Insufficient data for GARCH modeling for {timeframe} minutes timeframe after removing NaN/inf values. Using standard deviation instead.[/yellow]")
-            volatilities[timeframe] = returns[price_col].std()
-            continue
-        
-        try:
-            # Fit GARCH(1,1) model
-            model = arch_model(returns, vol='GARCH', p=1, q=1)
-            results = model.fit(disp='off')
-
-            # Forecast volatility
-            forecast = results.forecast(horizon=1)
-            
-            # Extract the volatility forecast
-            volatility_forecast = np.sqrt(forecast.variance.values[-1, :])[0]
-            volatilities[timeframe] = volatility_forecast
-            console.print(f"[green]Successfully calculated GARCH volatility for {timeframe} minutes timeframe: {volatility_forecast:.4f}[/green]")
-        except Exception as e:
-            console.print(f"[yellow]Warning: GARCH modeling failed for {timeframe} minutes timeframe. Using standard deviation instead. Error: {str(e)}[/yellow]")
-            volatilities[timeframe] = returns[price_col].std()
-
-    return volatilities
-
-def calculate_market_condition_factor():
-    # Placeholder function - implement actual market condition analysis
-    return 1.0
-
-def calculate_age_volatility_factor(volatility):
-    # Placeholder function - implement relationship between age and volatility
-    return max(1 - (volatility / 100), 0.5)
-
-def calculate_market_correlation(token_data):
-    # Placeholder function - implement correlation calculation
-    return 1.0
-
-def calculate_historical_volatility(price_data, window=30):
-    if len(price_data) < window:
-        return np.nan  # Return NaN if there's not enough data
-    returns = price_data.pct_change().dropna()
-    if len(returns) == 0:
-        return np.nan  # Return NaN if there are no valid returns
-    volatility = returns.rolling(window=window).std().mean()  # Use mean instead of last value
-    return volatility * np.sqrt(365)  # Annualize the volatility
-
-def calculate_price_range(current_price, bin_count=69, bin_step=0.01):
-    lower_bound = current_price * (1 - bin_step) ** (bin_count // 2)
-    upper_bound = current_price * (1 + bin_step) ** (bin_count // 2)
-    return lower_bound, upper_bound
-
-def generate_explanation(setting, value, mode, timeframe_minutes, df_top, market_cap_10th_percentile=None, valid_market_caps=None):
-    risk_factors = {'degen': 1.2, 'moderate': 1.0, 'conservative': 0.8}
-    risk_factor = risk_factors[mode]
-
-    if setting == 'Min Token Market Cap':
-        return f"""\
-        Minimum market capitalization recommended: ${value:,}
-        
-        Calculation method:
-        1. We analyzed the market caps of the top 30 tokens based on a custom score, excluding extremely high and low values.
-        2. 10th percentile of valid market caps: ${market_cap_10th_percentile:,.2f}
-        3. This value was adjusted by the risk factor ({risk_factor} for {mode} mode).
-        4. The result was compared with a minimum threshold of $200,000.
-        5. The higher value was chosen to ensure sufficient liquidity.
-        
-        Number of tokens analyzed: {len(valid_market_caps)}
-        Minimum market cap in data: ${valid_market_caps.min():,.2f}
-        Maximum market cap in data: ${valid_market_caps.max():,.2f}
-        
-        This setting balances opportunity with stability, ensuring sufficient liquidity across the 69 bins in the Spot-Wide strategy.
-        It helps filter out extremely small or potentially manipulated tokens while still allowing entry into promising new projects.
-        """
-    elif setting == 'Min Token 5 Min Price Change (%)':
-        price_changes_5m = df_top['price_change_5m'].dropna()
-        mean_5m = price_changes_5m.mean()
-        std_5m = price_changes_5m.std()
-        percentile_10 = price_changes_5m.quantile(0.10)
-        
-        return f"""\
-        Minimum 5-minute price change threshold for entry or re-entry, based on analysis of historical data.
-        This helps avoid entering or re-entering a pool that is experiencing a rapid price decline. The recommended value is {value}%.
-
-        Calculation method:
-        1. We analyzed all 5-minute price changes in the recent data of top-performing tokens.
-        2. Key statistics:
-           - Mean: {mean_5m:.2f}%
-           - Standard Deviation: {std_5m:.2f}%
-           - 10th Percentile: {percentile_10:.2f}%
-        3. We used the 10th percentile as the base threshold.
-        4. This base threshold was then adjusted by the risk factor ({risk_factor} for {mode} mode).
-
-        How to use this setting to prevent entering dumping pools:
-        - Monitor the live 5-minute price change of the token.
-        - Only enter the pool if the 5-minute price change is above this threshold.
-        - This setting helps prevent entering during rapid, short-term price declines, which could indicate a dumping scenario.
-        """
-    elif setting == 'Min Token 1 HR Price Change (%)':
-        return f"""\
-        Minimum 1-hour price change for entry, based on the 10th percentile of recent data from top-performing tokens.
-        Value: {value}%
-        This helps identify potential entry points while avoiding tokens in significant short-term decline.
-        Adjusted for {mode} risk profile (factor: {risk_factor}).
-        """
-    elif setting == 'Max Token 1 HR Price Change (%)':
-        return f"""\
-        Maximum 1-hour price change for entry, based on the 90th percentile of recent data from top-performing tokens.
-        Value: {value}%
-        This helps avoid entering tokens that might be experiencing unsustainable short-term growth.
-        Adjusted for {mode} risk profile (factor: {risk_factor}).
-        """
-    elif setting == 'Min Token 1 HR Volume':
-        return f"""\
-        Minimum 1-hour trading volume required for entry, ensuring sufficient liquidity.
-        Value: ${value:,.2f}
-        Based on the 25th percentile of volumes from top-performing tokens.
-        Adjusted for {mode} risk profile (factor: {risk_factor}).
-        """
-    elif setting == 'Min Token 24 Hrs Volume':
-        return f"""\
-        Minimum 24-hour trading volume, indicating sustained market interest.
-        Value: ${value:,.2f}
-        Based on the 25th percentile of 24-hour volumes from top-performing tokens.
-        Adjusted for {mode} risk profile (factor: {risk_factor}).
-        """
-    elif setting == 'Min Token Age (hrs)':
-        return f"""\
-        Minimum age of the token pool, helping to avoid brand new, untested tokens.
-        Value: {value:.1f} hours
-        Based on the 10th percentile of ages from top-performing tokens.
-        Adjusted for {mode} risk profile (factor: {risk_factor}).
-        """
-    
-    return "No explanation available for this setting."
-
-def validate_data(df):
-    required_columns = ['timestamp', 'token_name', 'token_price', 'volume_5m', 'volume_1h', 'volume_6h', 'volume_24h', 'price_change_5m', 'price_change_1h', 'price_change_6h', 'price_change_24h']
-    missing_columns = [col for col in required_columns if col not in df.columns]
-    if missing_columns:
-        console.print(f"[bold red]Missing required columns: {', '.join(missing_columns)}[/bold red]")
-        return False
-    return True
-
-def fallback_recommendation():
-    console.print("[yellow]Using fallback recommendation due to calculation issues.[/yellow]")
-    return 60, {'timeframe': 60, 'score': 0, 'sharpe_ratio': 0, 'avg_price_change': 0, 'volatility': 0, 'avg_volume': 0}
+        console.print("\n[yellow]No recommendations or explanations to save.[/yellow]")
 
 def recommend_timeframe():
     try:
         data_manager.load_data()
         df_recent = data_manager.get_recent_data()
         
-        if not validate_data(df_recent):
-            return fallback_recommendation()
-        
-        if df_recent.empty or (datetime.now() - df_recent['timestamp'].max()).total_seconds() / 3600 > 24:
-            console.print("[bold yellow]Data is too old or empty. Please run a new data collection cycle.[/bold yellow]")
-            return None, None
+        if df_recent.empty:
+            console.print("[bold yellow]No recent data available. Please run a new data collection cycle.[/bold yellow]")
+            return None, None, None
 
         console.print("[cyan]Calculating metrics for multiple timeframes...[/cyan]")
         
         timeframes = [30, 60, 120, 180, 360, 720, 1440]
-        results = [calculate_metrics(tf, df_recent) for tf in timeframes]
+        results = []
+        for tf in timeframes:
+            df_prepared = prepare_data_for_timeframe(df_recent, tf)
+            if df_prepared is not None:
+                df_prepared['multifactor_score'] = multifactor_score(df_prepared)
+                
+                result = {
+                    'timeframe': tf,
+                    'score': df_prepared['multifactor_score'].mean()
+                }
+                results.append(result)
+            else:
+                console.print(f"[yellow]Skipping timeframe {tf} due to insufficient data[/yellow]")
 
-        valid_results = [r for r in results if r is not None and isinstance(r, dict) and 'score' in r]
+        if not results:
+            console.print("[bold red]No valid results were returned from calculations.[/bold red]")
+            return None, None, None
 
-        if not valid_results:
-            console.print("[bold red]No valid results were returned from calculate_metrics.[/bold red]")
-            return fallback_recommendation()
-
-        best_result = max(valid_results, key=lambda x: x['score'])
+        best_result = max(results, key=lambda x: x['score'])
         best_timeframe = best_result['timeframe']
         
-        return best_timeframe, best_result
+        recommendations, _ = get_current_recommendations(best_timeframe, 'moderate', df_recent)
+        
+        return best_timeframe, best_result, recommendations
     
     except Exception as e:
         console.print(f"[bold red]Error in recommend_timeframe: {str(e)}[/bold red]")
         console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")
-        return fallback_recommendation()
+        return None, None, None
 
 def display_command_list():
     console.print(Panel(Text("Available Commands:", style="bold cyan")))
@@ -744,25 +595,22 @@ def create_status_table(time_to_next_run):
     return table
 
 def check_for_input():
-    if os.name == 'nt':  # Windows
-        return msvcrt.kbhit()
-    else:  # Unix-like systems
-        import select
-        return select.select([sys.stdin], [], [], 0)[0]
+    return msvcrt.kbhit() if os.name == 'nt' else select.select([sys.stdin], [], [], 0)[0]
 
 def get_input():
-    if os.name == 'nt':  # Windows
-        return msvcrt.getch().decode('utf-8').lower()
-    else:  # Unix-like systems
-        return sys.stdin.readline().strip().lower()
+    return msvcrt.getch().decode('utf-8').lower() if os.name == 'nt' else sys.stdin.readline().strip().lower()
 
-def get_timeframe_minutes(timeframe):
-    if timeframe == 'day':
-        return 1440
-    elif timeframe == 'hour':
-        return 60
-    else:
-        return 5  # Default to 5 minutes if unknown
+def get_user_input(prompt, options):
+    while True:
+        console.print(f"\n[bold cyan]{prompt}[/bold cyan]")
+        for key, value in options.items():
+            console.print(f"{key}. {value}")
+        
+        choice = console.input("Enter your choice: ")
+        if choice in options:
+            return options[choice]
+        else:
+            console.print("[red]Invalid choice. Please try again.[/red]")
 
 def main():
     collection_interval = timedelta(minutes=30)
@@ -791,37 +639,30 @@ def main():
                 if command == 'r':
                     data_manager.load_data()
                     df_recent = data_manager.get_recent_data()
-                    timeframe_minutes = get_timeframe_input()
-                    mode = get_risk_mode_input()
+                    timeframe_minutes = get_user_input("Select your timeframe for LP pool:", 
+                                                       {'1': 30, '2': 60, '3': 120, '4': 180, '5': 360, '6': 720, '7': 1440})
+                    mode = get_user_input("Choose your preferred mode:", 
+                                          {'1': 'degen', '2': 'moderate', '3': 'conservative'})
                     try:
-                        recommendations = get_current_recommendations(timeframe_minutes, mode, df_recent)
-                        if recommendations:
-                            save_recommendations(recommendations)
+                        recommendations, explanations = get_current_recommendations(timeframe_minutes, mode, df_recent)
+                        if recommendations and explanations:
+                            display_recommendations(recommendations, explanations)
+                            save_recommendations(recommendations, explanations)
                     except Exception as e:
                         console.print(f"[red]An error occurred: {str(e)}[/red]")
                         console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")
                 elif command == 't':
-                    best_timeframe, best_result = recommend_timeframe()
-                    if best_timeframe and best_result:
+                    best_timeframe, best_result, recommendations = recommend_timeframe()
+                    if best_timeframe and best_result and recommendations:
                         console.print(f"\n[bold green]Recommended Timeframe: {best_timeframe} minutes[/bold green]")
                         console.print(f"Score: {best_result['score']:.4f}")
                         
-                        # Get and display settings for the recommended timeframe
-                        data_manager.load_data()
-                        df_recent = data_manager.get_recent_data()
-                        recommendations = get_current_recommendations(best_timeframe, 'moderate', df_recent)
-                        if recommendations:
-                            console.print("\n[bold green]Recommended settings for this timeframe:[/bold green]")
-                            for setting, value in recommendations.items():
-                                if 'Volume' in setting or 'Market Cap' in setting:
-                                    formatted_value = f"${value:,.0f}"
-                                elif 'Age' in setting:
-                                    formatted_value = f"{value:.1f}"
-                                else:
-                                    formatted_value = f"{value:.2f}%"
-                                console.print(f"[cyan]{setting}:[/cyan] {formatted_value}")
+                        console.print("\n[bold green]Recommended settings for this timeframe:[/bold green]")
+                        for setting, value in recommendations.items():
+                            formatted_value = f"${value:,.0f}" if 'Volume' in setting or 'Market Cap' in setting else f"{value:.2f}%"
+                            console.print(f"[cyan]{setting}:[/cyan] {formatted_value}")
                     else:
-                        console.print("[bold red]Unable to determine the best timeframe.[/bold red]")
+                        console.print("[bold red]Unable to determine the best timeframe or generate recommendations.[/bold red]")
                 elif command == 'q':
                     console.print(Panel(Text("Exiting the program.", style="bold red")))
                     return
