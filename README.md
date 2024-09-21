@@ -55,13 +55,6 @@ CopyOr download and extract the ZIP file from the GitHub repository.
   pip install -r requirements.txt
   ```
 
-### Configuration
-
-1. **API Key Setup** (If required)
-- If the script requires an API key, create a `.env` file in the project root:
-  ```
-  API_KEY=your_api_key_here
-  ```
 
 ### Running the Script
 
