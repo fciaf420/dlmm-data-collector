@@ -1,107 +1,82 @@
 # 🧠 DLMM Data Collector
 
-### 🚀 Overview
-The **DLMM Data Collector** is an advanced script designed to gather, analyze, and optimize settings for the **SOL Decoder DLMM Bot**. It collects data from trending pools on the **Solana network** using the **GeckoTerminal API** and leverages powerful mathematical models to generate actionable insights.
+## 🚀 Overview
+The **DLMM Data Collector** is an advanced script designed to gather, analyze, and optimize settings for the **SOL Decoder DLMM Bot**. It collects data from trending pools on the **Solana network** using the **GeckoTerminal API** and leverages powerful mathematical and machine learning models to generate actionable insights.
 
-### ✨ Key Features
+## ✨ Key Features
 - 📊 **Real-Time Data Collection:** Gather live data from trending Solana pools.
 - 📈 **Advanced Analysis:** Perform metrics calculations and time series analysis.
+- 🤖 **Machine Learning Integration:** Utilizes Random Forest for predictive analytics.
 - 🎯 **Recommendations:** Provides risk-adjusted entry criteria & adaptive stop loss.
 - ⚙️ **Dynamic Optimization:** Adjusts timeframe and risk profile automatically.
-- 🔄 **Continuous Updates:** Auto-refreshes data every 30 minutes.
+- 🔄 **Continuous Updates:** Auto-refreshes data every 30 minutes in the background.
+- 🎨 **Enhanced UI:** Cyberpunk-style ASCII art and colored text output.
 
----
-
-### 🧩 Functional Components
+## 🧩 Functional Components
 1. **📡 Data Collection**
    - API interaction with **GeckoTerminal**
    - Collects prices, market caps, volumes, price changes
    - Robust error handling & rate limiting
-
 2. **🔍 Data Processing & Analysis**
-   - Data cleaning for quality assurance
-   - Calculate key metrics (volatility, volume, price changes)
-   - Identifies historical trends and patterns
-
+   - Data cleaning and preprocessing
+   - Calculate key metrics (volatility, volume ratios, price changes)
+   - Machine learning-based feature importance analysis
 3. **💡 Recommendation Engine**
-   - Dynamically selects timeframe
+   - ML-powered timeframe selection
    - Provides risk-adjusted recommendations (Degen, Moderate, Conservative)
-   - Calculates adaptive stop losses
-
+   - Calculates dynamic stop losses based on market volatility
 4. **🖥️ User Interface**
    - Interactive console with real-time data updates
-   - On-demand recommendations
+   - On-demand recommendations and data pulls
 
----
+## 📐 Mathematical and ML Models
+- **Volatility Calculation:** GARCH Model
+- **Multifactor Scoring:** Combines price momentum, volume trends, market cap, and liquidity
+- **Random Forest Regression:** For predicting optimal trading parameters
+- **Dynamic Stop Loss:** Adaptive based on recent market volatility
 
-### 📐 Mathematical Models
-- **Volatility Calculation**
-   - Historical Volatility: 𝜎 = sqrt(Σ(r_i - r̄)² / (n-1))
-   - GARCH Model: σ²_t = ω + α * ε²_(t-1) + β * σ²_(t-1)
+## ⚙️ Advanced Features
+- **Background Data Updates:** Automatically refreshes data every 30 minutes
+- **ML-based Timeframe Optimization:** Evaluates and recommends optimal timeframes
+- **Enhanced Market Cap Analysis:** Improved filtering and distribution analysis
+- **Consistency Checks:** Verifies recommendations against explanations
 
-- **Score Calculation**
-   - **CopyScore** = (Sharpe Ratio * 0.4) + (Volume Adjusted Change * 0.6)
-   - **Sharpe Ratio** = (Average Price Change) / (Price Change Volatility)
-   - **Volume Adjusted Change** = Average Price Change * sqrt(Average Volume)
+## 📦 Requirements
+Refer to `requirements.txt` for a full list of Python dependencies, including:
+- requests
+- pandas & numpy
+- scikit-learn
+- arch
+- rich
+- colorama
 
-- **Adaptive Stop Loss**
-   - **Stop Loss %** = max(10%, min((max_price_change * 0.4 + 10) * risk_factor, 50%))
-
----
-
-### ⚙️ Advanced Features
-- **GARCH Modeling:** Forecasts volatility with advanced techniques 📊
-- **Dynamic Timeframe Optimization:** Evaluates timeframes from 30m to 24h ⏰
-- **Risk Profile Adjustment:** Customizes strategy based on your profile ⚖️
-
-
-
-📦 Requirements
-Refer to requirements.txt for a list of Python dependencies, including:
-
-requests
-pandas & numpy
-arch
-rich
-
-
-
-
-⚠️ Disclaimer
+## ⚠️ Disclaimer
 This script is for informational purposes only. Always conduct your own research and consider your risk tolerance before making investment decisions.
----
 
-### 🛠️ Usage
+## 🛠️ Usage
 To run the script:
 ```bash
 python dlmm_data_collector.py
 
-### Follow the on-screen prompts to:
+Follow the on-screen prompts to:
 
-- Select risk profile 🎲
-- Choose a timeframe ⏳
-- View recommendations 👀
-- Get optimized settings 🎯
+Select risk profile 🎲
+Choose a timeframe ⏳
+View recommendations 👀
+Get optimized settings 🎯
 
----
+🔄 Continuous Operation
 
-### 🔄 Continuous Operation
+Automated Updates: Data refreshes every 30 minutes in the background 🕒
+Commands:
 
-- **Automated Updates:** Data refreshes every 30 minutes 🕒
-- **Commands:**
-  - `r`: Get recommendations 🎯
-  - `t`: Get recommended timeframe 🕰️
-  - `q`: Quit program 🚪
-
----
-
-### ✅ Best Practices for Long-Running Scripts
-
-- Use a terminal multiplexer (e.g., `tmux`) for persistent sessions.
-- Run as a background process:
-  ```bash
-  nohup python dlmm_data_collector.py &
+r: Get recommendations 🎯
+t: Get recommended timeframe and ML predictions 🕰️
+p: Manually trigger a data pull 🔄
+q: Quit program 🚪
 
 
 
+✅ Best Practices for Long-Running Scripts
 
+Use a terminal multiplexer (e.g., tmux) for persistent sessions
