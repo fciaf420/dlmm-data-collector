@@ -339,6 +339,37 @@ def prepare_data_for_timeframe(df, timeframe_minutes):
     
     return df_prepared
 
+def calculate_price_range(timeframe_minutes, df_recent):
+    # Calculate volatility based on recent price changes
+    price_changes = df_recent['price_change_24h'].dropna()
+    if len(price_changes) > 0:
+        volatility = np.std(price_changes) * np.sqrt(1440 / timeframe_minutes)
+    else:
+        volatility = 0.1  # Default value if no data available
+
+    # Determine price range based on volatility and timeframe
+    if timeframe_minutes <= 60:  # Short timeframe
+        if volatility < 0.05:
+            return "Wide (~30% up/down)"
+        elif volatility < 0.1:
+            return "Medium (~17% up/down)"
+        else:
+            return "Narrow (~10% up/down)"
+    elif timeframe_minutes <= 360:  # Medium timeframe
+        if volatility < 0.1:
+            return "Wide (~30% up/down)"
+        elif volatility < 0.2:
+            return "Medium (~17% up/down)"
+        else:
+            return "Narrow (~10% up/down)"
+    else:  # Long timeframe
+        if volatility < 0.15:
+            return "Wide (~30% up/down)"
+        elif volatility < 0.25:
+            return "Medium (~17% up/down)"
+        else:
+            return "Narrow (~10% up/down)"
+
 def get_current_recommendations(timeframe_minutes, mode, df_recent):
     log.info(f"Generating recommendations for {timeframe_minutes} minute timeframe in {mode} mode")
     
@@ -456,6 +487,17 @@ def get_current_recommendations(timeframe_minutes, mode, df_recent):
         Base stop loss (2x volatility): {base_stop_loss:.2f}%
         Risk-adjusted stop loss: {adjusted_stop_loss:.2f}%
         Final stop loss (capped between 5% and 20%): {final_stop_loss:.2f}%
+        """
+        
+        # Calculate and add price range setting
+        price_range = calculate_price_range(timeframe_minutes, df_recent)
+        recommendations['Price Range Setting'] = price_range
+        explanations['Price Range Setting'] = f"""
+        Automatically determined based on timeframe ({timeframe_minutes} minutes) and current market volatility.
+        Wide: Price can go up or down ~30% (Larger range to earn fees)
+        Medium: Price can go up or down ~17%
+        Narrow: Price can go up or down ~10% (Higher risk of full conversion)
+        Selected: {price_range}
         """
         
         return recommendations, explanations
@@ -590,7 +632,7 @@ def print_cyberpunk_header():
     print_logo()
     print(f"\n{Fore.GREEN}{'=' * 80}")
     print(f"{Fore.YELLOW}                         DLMM Settings Script v1.0")
-    print(f"{Fore.CYAN}                     made with <3 by @mininghelium")
+    print(f"{Fore.CYAN}                     made with <3 by @mining helium")
     print(f"{Fore.GREEN}{'=' * 80}\n")
 
 def print_menu():
@@ -610,13 +652,61 @@ def r_command():
                           {'1': 'degen', '2': 'moderate', '3': 'conservative'})
     try:
         recommendations, explanations = get_current_recommendations(timeframe_minutes, mode, df_recent)
+        
         if recommendations and explanations:
             display_recommendations(recommendations, explanations)
             save_recommendations(recommendations, explanations)
+            print(f"{Fore.GREEN}[SYS] Recommendations generated successfully!")
+        else:
+            console.print("[red]No recommendations or explanations generated.[/red]")
     except Exception as e:
         console.print(f"[red]An error occurred: {str(e)}[/red]")
         console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")
-    print(f"{Fore.GREEN}[SYS] Recommendations generated successfully!")
+
+def display_recommendations(recommendations, explanations):
+    console.print(f"\n[bold green]Optimized DLMM Entry Criteria:[/bold green]")
+    for setting, value in recommendations.items():
+        if 'Volume' in setting or 'Market Cap' in setting:
+            formatted_value = f"${value:,.0f}"
+        elif 'Age' in setting:
+            formatted_value = f"{value:.1f} hours"
+        elif 'Tail Risk' in setting or 'Pattern Index' in setting:
+            formatted_value = f"{value:.4f}"
+        elif setting == 'Price Range Setting':
+            formatted_value = value
+        else:
+            formatted_value = f"{value:.2f}%"
+        console.print(f"[cyan]{setting}:[/cyan] {formatted_value}")
+        console.print(f"[yellow]{explanations[setting]}[/yellow]\n")
+
+def main():
+    console.print(Panel(Text("DLMM Data Collector", style="bold magenta")))
+    log.info("Script started. Data collection will begin shortly.")
+    try:
+        print_cyberpunk_header()
+        while True:
+            print_menu()
+            choice = input(f"{Fore.YELLOW}[SYS] Enter your choice: ").lower()
+            
+            if choice == 'r':
+                r_command()
+            elif choice == 't':
+                t_command()
+            elif choice == 'p':
+                pull_data()
+            elif choice == 'q':
+                console.print(Panel(Text("Script terminated by user.", style="bold red")))
+                log.info("Script terminated by user.")
+                break
+            else:
+                print(f"{Fore.RED}[ERROR] Invalid choice. Please try again.")
+    except KeyboardInterrupt:
+        console.print(Panel(Text("Script terminated by user.", style="bold red")))
+        log.info("Script terminated by user.")
+    except Exception as e:
+        console.print(Panel(Text(f"An unexpected error occurred: {str(e)}", style="bold red")))
+        log.error(f"An unexpected error occurred: {str(e)}")
+        log.error(traceback.format_exc())
 
 def t_command():
     print(f"\n{Fore.YELLOW}[SYS] Analyzing Optimal Timeframes...")
@@ -723,6 +813,8 @@ def display_recommendations(recommendations, explanations):
             formatted_value = f"{value:.1f} hours"
         elif 'Tail Risk' in setting or 'Pattern Index' in setting:
             formatted_value = f"{value:.4f}"
+        elif setting == 'Price Range Setting':
+            formatted_value = value
         else:
             formatted_value = f"{value:.2f}%"
         console.print(f"[cyan]{setting}:[/cyan] {formatted_value}")
@@ -773,6 +865,11 @@ def main():
             console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")
         
         input(f"\n{Fore.GREEN}[SYS] Press Enter to continue...")
+
+try:
+    main()
+except KeyboardInterrupt:
+    console.print(Panel(Text("Script terminated by user.", style="bold red")))
 
 if __name__ == "__main__":
     console.print(Panel(Text("DLMM Data Collector", style="bold magenta")))
