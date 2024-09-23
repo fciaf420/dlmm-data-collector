@@ -57,14 +57,31 @@ CopyOr download and extract the ZIP file from the GitHub repository.
   pip install -r requirements.txt
   ```
 
+### Pip Requirements
+
+Here's a list of the main Python packages required for this project:
+requests==2.26.0
+pandas==1.3.3
+numpy==1.21.2
+scikit-learn==0.24.2
+arch==5.0.1
+pykalman==0.9.5
+dtaidistance==2.3.6
+rich==10.12.0
+colorama==0.4.4
+ratelimit==2.2.1
+Copy
+You can install these packages by running:
+pip install -r requirements.txt
+Copy
 ### Cross-Platform Compatibility
 
 The script was initially designed for Windows systems and contains some Windows-specific components. To run it on Linux or macOS, you'll need to make the following modifications:
 
 1. **Remove Windows-specific imports:**
-Open `dlmm_data_collector.py` in a text editor and remove or comment out the following line:
-```python
-# import msvcrt  # Comment out or remove this line
+   Open `dlmm_data_collector.py` in a text editor and remove or comment out the following line:
+   ```python
+   # import msvcrt  # Comment out or remove this line
 
 Replace msvcrt.kbhit() function:
 Find any occurrences of msvcrt.kbhit() in the script and replace them with a cross-platform alternative. For example:
@@ -186,19 +203,7 @@ ML-based Timeframe Optimization: Evaluates and recommends optimal timeframes
 Enhanced Market Cap Analysis: Improved filtering and distribution analysis
 Consistency Checks: Verifies recommendations against explanations
 
-📦 Requirements
-Refer to requirements.txt for a full list of Python dependencies, including:
-
-requests
-pandas & numpy
-scikit-learn
-arch
-rich
-colorama
-
 🛠 Contributing
 If you've successfully modified the script to work on Linux or macOS, consider submitting a pull request with your changes to help improve cross-platform compatibility for all users.
 ⚠️ Disclaimer
 This script is for informational purposes only. Always conduct your own research and consider your risk tolerance before making investment decisions. The creators of this script are not responsible for any financial losses incurred.
-Copy
-You can now copy this entire output and paste it directly into your GitHub README.md file. G
