@@ -1,71 +1,70 @@
-🧠 DLMM Data Collector
-🚀 Overview
-The DLMM Data Collector is an advanced script designed to gather, analyze, and optimize settings for the SOL Decoder DLMM Bot. It collects data from trending pools on the Solana network using the GeckoTerminal API and leverages powerful mathematical and machine learning models to generate actionable insights.
-✨ Key Features
+# 🧠 DLMM Data Collector
 
-📊 Real-Time Data Collection: Gather live data from trending Solana pools.
-📈 Advanced Analysis: Perform metrics calculations and time series analysis.
-🤖 Machine Learning Integration: Utilizes Random Forest for predictive analytics.
-🎯 Recommendations: Provides risk-adjusted entry criteria & adaptive stop loss.
-⚙️ Dynamic Optimization: Adjusts timeframe and risk profile automatically.
-🔄 Continuous Updates: Auto-refreshes data every 30 minutes in the background.
-🎨 Enhanced UI: Cyberpunk-style ASCII art and colored text output.
+## 🚀 Overview
 
-🚀 Getting Started
-Prerequisites
+The **DLMM Data Collector** is an advanced script designed to gather, analyze, and optimize settings for the **SOL Decoder DLMM Bot**. It collects data from trending pools on the **Solana network** using the **GeckoTerminal API** and leverages powerful mathematical and machine learning models to generate actionable insights.
 
-Python Installation
+## ✨ Key Features
 
-Ensure you have Python 3.8 or newer installed on your system.
-To check your Python version, open a terminal and run:
-Copypython3 --version
+- 📊 **Real-Time Data Collection:** Gather live data from trending Solana pools.
+- 📈 **Advanced Analysis:** Perform metrics calculations and time series analysis.
+- 🤖 **Machine Learning Integration:** Utilizes Random Forest for predictive analytics.
+- 🎯 **Recommendations:** Provides risk-adjusted entry criteria & adaptive stop loss.
+- ⚙️ **Dynamic Optimization:** Adjusts timeframe and risk profile automatically.
+- 🔄 **Continuous Updates:** Auto-refreshes data every 30 minutes in the background.
+- 🎨 **Enhanced UI:** Cyberpunk-style ASCII art and colored text output.
 
-If Python is not installed or you need to update, download it from python.org.
+## 🚀 Getting Started
 
+### Prerequisites
 
-Git Installation (Optional, for cloning the repository)
+1. **Python Installation**
+   - Ensure you have Python 3.8 or newer installed on your system.
+   - To check your Python version, open a terminal and run:
+     ```
+     python3 --version
+     ```
+   - If Python is not installed or you need to update, download it from [python.org](https://www.python.org/downloads/).
 
-Install Git from git-scm.com if you haven't already.
+2. **Git Installation** (Optional, for cloning the repository)
+   - Install Git from [git-scm.com](https://git-scm.com/downloads) if you haven't already.
 
+### Installation
 
-
-Installation
-
-Clone the Repository (If you're using Git)
-Copygit clone https://github.com/yourusername/dlmm-data-collector.git
+1. **Clone the Repository** (If you're using Git)
+git clone https://github.com/yourusername/dlmm-data-collector.git
 cd dlmm-data-collector
-Or download and extract the ZIP file from the GitHub repository.
-Set Up a Virtual Environment (Recommended)
+CopyOr download and extract the ZIP file from the GitHub repository.
 
-Create a virtual environment:
-Copypython3 -m venv venv
+2. **Set Up a Virtual Environment** (Recommended)
+- Create a virtual environment:
+  ```
+  python3 -m venv venv
+  ```
+- Activate the virtual environment:
+  - On macOS and Linux:
+    ```
+    source venv/bin/activate
+    ```
+  - On Windows:
+    ```
+    venv\Scripts\activate
+    ```
 
-Activate the virtual environment:
+3. **Install Required Packages**
+- Install all required packages using pip:
+  ```
+  pip install -r requirements.txt
+  ```
 
-On macOS and Linux:
-Copysource venv/bin/activate
+### Cross-Platform Compatibility
 
-On Windows:
-Copyvenv\Scripts\activate
-
-
-
-
-
-Install Required Packages
-
-Install all required packages using pip:
-Copypip install -r requirements.txt
-
-
-
-
-Cross-Platform Compatibility
 The script was initially designed for Windows systems and contains some Windows-specific components. To run it on Linux or macOS, you'll need to make the following modifications:
 
-Remove Windows-specific imports:
-Open dlmm_data_collector.py in a text editor and remove or comment out the following line:
-pythonCopy# import msvcrt  # Comment out or remove this line
+1. **Remove Windows-specific imports:**
+Open `dlmm_data_collector.py` in a text editor and remove or comment out the following line:
+```python
+# import msvcrt  # Comment out or remove this line
 
 Replace msvcrt.kbhit() function:
 Find any occurrences of msvcrt.kbhit() in the script and replace them with a cross-platform alternative. For example:
@@ -201,3 +200,5 @@ colorama
 If you've successfully modified the script to work on Linux or macOS, consider submitting a pull request with your changes to help improve cross-platform compatibility for all users.
 ⚠️ Disclaimer
 This script is for informational purposes only. Always conduct your own research and consider your risk tolerance before making investment decisions. The creators of this script are not responsible for any financial losses incurred.
+Copy
+You can now copy this entire output and paste it directly into your GitHub README.md file. G
