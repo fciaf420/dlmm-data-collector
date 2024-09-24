@@ -36,6 +36,9 @@ from rich.table import Table
 from rich.console import Console
 import time
 from contextlib import nullcontext
+import queue
+import threading
+import time
 
 
 data_pull_lock = threading.Lock()
@@ -98,6 +101,34 @@ class GlobalState:
 
 global_state = GlobalState()
 
+import queue
+import threading
+import time
+
+request_queue = queue.Queue()
+RATE_LIMIT = 20  # Calls per minute, set lower than the actual limit for safety
+DELAY = 60 / RATE_LIMIT  # Delay between each request
+
+def process_queue():
+    while True:
+        request = request_queue.get()
+        if request is None:
+            break
+        url, params, callback = request
+        try:
+            response = requests.get(url, headers={'accept': 'application/json'}, params=params, timeout=30)
+            response.raise_for_status()
+            callback(response.json())
+        except Exception as e:
+            log.error(f"Error processing request: {str(e)}")
+        finally:
+            request_queue.task_done()
+        time.sleep(DELAY)
+
+# Start the queue processor thread
+queue_thread = threading.Thread(target=process_queue, daemon=True)
+queue_thread.start()
+
 @sleep_and_retry
 @limits(calls=20, period=60)
 def call_api_with_retry(url, params=None, max_retries=5):
@@ -137,7 +168,7 @@ def get_ohlcv_data(network, pool_address):
         try:
             response = call_api_with_retry(url, params)
             ohlcv_data[timeframe] = response
-            time.sleep(2)
+            time.sleep(2)  # Add a 2-second delay between API calls
         except Exception as e:
             log.error(f"Failed to get OHLCV data for {pool_address} ({timeframe}): {str(e)}")
     return ohlcv_data
@@ -174,11 +205,12 @@ console = Console()
 def collect_data():
     # Define scoring weights
     weights = {
-            'price_momentum': 0.4,
-            'volume_trend': 0.4,
-            'market_cap': 0.05,
-            'volatility': 0.15,
-            'liquidity_ratio': 0.05
+        'price_momentum': 0.20,
+        'price_reversion': 0.20,
+        'volume_acceleration': 0.25,
+        'market_cap': 0.10,
+        'volatility': 0.20,
+        'liquidity_ratio': 0.05
     }
 
     # Display score interpretation ranges and scoring weights at the beginning
@@ -191,10 +223,15 @@ def collect_data():
 
 [bold underline]Scoring System Weights[/bold underline]
 Price Momentum: {weights['price_momentum'] * 100:.0f}%
-Volume Trend: {weights['volume_trend'] * 100:.0f}%
+Price Reversion: {weights['price_reversion'] * 100:.0f}%
+Volume Acceleration: {weights['volume_acceleration'] * 100:.0f}%
 Market Cap: {weights['market_cap'] * 100:.0f}%
 Volatility: {weights['volatility'] * 100:.0f}%
 Liquidity Ratio: {weights['liquidity_ratio'] * 100:.0f}%
+
+[bold yellow]Note:[/bold yellow] Data collection may take up to 8 minutes due to public API rate limits.
+
+The multifactor score evaluates tokens based on recent price momentum, potential for price reversals, volume trends, market cap, and volatility. A higher score suggests a token may be entering a phase of increased trading activity and price movement. For LP providers, this could indicate a good opportunity to earn fees from heightened trading volume while the token's price dynamics remain favorable. However, always combine this score with your own research and risk assessment before making LP decisions
 """
     console.print(Panel(score_ranges, style="bold cyan"))
 
@@ -240,8 +277,10 @@ Liquidity Ratio: {weights['liquidity_ratio'] * 100:.0f}%
             try:
                 trending_pools = get_trending_pools(network='solana', page=page)
                 if 'data' not in trending_pools:
+                    console.print(f"[bold red]Unexpected response structure for page {page}:[/bold red] {trending_pools}")
                     continue
             except Exception as e:
+                console.print(f"[bold red]Error fetching trending pools for page {page}:[/bold red] {str(e)}")
                 continue
 
             for pool in trending_pools['data']:
@@ -276,32 +315,24 @@ Liquidity Ratio: {weights['liquidity_ratio'] * 100:.0f}%
 
                     # Prepare pool_data with all specified fields
                     pool_data = {
-                        'timestamp': current_time.isoformat(),
-                        'token_name': token_name,
-                        'network': network,
-                        'token_price': float(pool_attributes.get('base_token_price_usd', 0)),
-                        'market_cap': float(pool_attributes.get('market_cap_usd', 0) or 0),
-                        'fdv': float(pool_attributes.get('fdv_usd', 0) or 0),
-                        'liquidity': float(pool_attributes.get('reserve_in_usd', 0) or 0),
-                        'volume_5m': float(volume_usd.get('m5', 0) or 0),
-                        'volume_1h': float(volume_usd.get('h1', 0) or 0),
-                        'volume_6h': float(volume_usd.get('h6', 0) or 0),
-                        'volume_24h': float(volume_usd.get('h24', 0) or 0),
-                        'price_change_5m': float(price_change_percentage.get('m5', 0) or 0),
-                        'price_change_1h': float(price_change_percentage.get('h1', 0) or 0),
-                        'price_change_6h': float(price_change_percentage.get('h6', 0) or 0),
-                        'price_change_24h': float(price_change_percentage.get('h24', 0) or 0),
-                        'transactions_5m_buys': transactions.get('m5', {}).get('buys', 0),
-                        'transactions_5m_sells': transactions.get('m5', {}).get('sells', 0),
-                        'transactions_1h_buys': transactions.get('h1', {}).get('buys', 0),
-                        'transactions_1h_sells': transactions.get('h1', {}).get('sells', 0),
-                        'transactions_6h_buys': transactions.get('h6', {}).get('buys', 0),
-                        'transactions_6h_sells': transactions.get('h6', {}).get('sells', 0),
-                        'transactions_24h_buys': transactions.get('h24', {}).get('buys', 0),
-                        'transactions_24h_sells': transactions.get('h24', {}).get('sells', 0),
-                        'pool_created_at': pool_created_at.isoformat(),
-                        'pool_age_hours': pool_age_hours,
-                    }
+    'timestamp': current_time.isoformat(),
+    'token_name': token_name,
+    'network': network,
+    'token_price': float(pool_attributes.get('base_token_price_usd', 0)),
+    'market_cap': float(pool_attributes.get('market_cap_usd', 0) or 0),
+    'fdv': float(pool_attributes.get('fdv_usd', 0) or 0),
+    'liquidity': float(pool_attributes.get('reserve_in_usd', 0) or 0),
+    'volume_5m': float(volume_usd.get('m5', 0) or 0),
+    'volume_1h': float(volume_usd.get('h1', 0) or 0),
+    'volume_6h': float(volume_usd.get('h6', 0) or 0),
+    'volume_24h': float(volume_usd.get('h24', 0) or 0),
+    'price_change_5m': float(price_change_percentage.get('m5', 0) or 0),
+    'price_change_1h': float(price_change_percentage.get('h1', 0) or 0),
+    'price_change_6h': float(price_change_percentage.get('h6', 0) or 0),
+    'price_change_24h': float(price_change_percentage.get('h24', 0) or 0),
+    'pool_created_at': pool_created_at.isoformat(),
+    'pool_age_hours': pool_age_hours,
+}
 
                     # Ensure 'market_cap' has a value
                     pool_data['market_cap'] = pool_data['market_cap'] or pool_data['fdv']
@@ -326,7 +357,15 @@ Liquidity Ratio: {weights['liquidity_ratio'] * 100:.0f}%
                     liquidity_ratio = volume_24h / market_cap if market_cap > 0 else 0
 
                     try:
-                        mf_score = multifactor_score(price_momentum, volume_1h, volume_24h, market_cap, volatility, liquidity_ratio)
+                        mf_score = multifactor_score(
+                            price_momentum=float(pool_data['price_change_24h']),
+                            volume_1h=float(pool_data['volume_1h']),
+                            volume_24h=float(pool_data['volume_24h']),
+                            market_cap=float(pool_data['effective_market_cap']),
+                            volatility=volatility,
+                            liquidity_ratio=liquidity_ratio,
+                            ohlcv_metrics=ohlcv_data
+                        )
                         pool_data['multifactor_score'] = mf_score
                     except Exception as score_error:
                         console.print(f"[yellow]Error calculating multifactor score for {token_name}: {str(score_error)}[/yellow]")
@@ -352,7 +391,7 @@ Liquidity Ratio: {weights['liquidity_ratio'] * 100:.0f}%
                     else:
                         pass  # Optionally, print minimal progress in the background thread
 
-                    time.sleep(1)  # Adjust delay as needed
+                    time.sleep(1)  # Add a small delay between processing each pool
 
                 except KeyError as e:
                     skipped_tokens.append(token_name)
@@ -514,57 +553,84 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def multifactor_score(price_momentum, volume_1h, volume_24h, market_cap, volatility, liquidity_ratio):
+import numpy as np
+
+def multifactor_score(price_momentum, volume_1h, volume_24h, market_cap, volatility, liquidity_ratio, ohlcv_metrics):
     try:
         # Define weights
         weights = {
-            'price_momentum': 0.4,
-            'volume_trend': 0.4,
+            'price_momentum': 0.25,
+            'price_reversion': 0.20,
+            'volume_acceleration': 0.30,
             'market_cap': 0.05,
             'volatility': 0.15,
             'liquidity_ratio': 0.05
         }
 
-        # Calculate volume trend using both 1h and 24h volumes
-        volume_1h_normalized = volume_1h / (volume_24h / 24)  # Normalize 1h volume against average hourly volume
-        volume_24h_normalized = volume_24h / market_cap  # 24h volume to market cap ratio
-        
-        # Combine 1h and 24h volume metrics with equal weight
-        volume_trend = (volume_1h_normalized * 0.5) + (volume_24h_normalized * 0.5)
-
-        # Normalize factors
-        norm_price_momentum = (np.tanh(price_momentum / 20) + 1) / 2  # Adjusted for typical daily % changes
-        norm_volume_trend = np.clip(volume_trend, 0, 1)  # Clip combined volume trend between 0 and 1
-        norm_market_cap = 1 - np.exp(-market_cap / 1e9)  # Favor smaller caps, but don't penalize large caps too much
-        norm_volatility = 1 / (1 + volatility / 0.5)  # Inverse relationship, 50% volatility gives 0.5 score
-        norm_liquidity_ratio = np.clip(liquidity_ratio / 0.1, 0, 1)  # 10% liquidity ratio is considered very good
-
-        logger.debug(f"Normalized factors: price_momentum={norm_price_momentum:.2f}, "
-                     f"volume_trend={norm_volume_trend:.2f}, market_cap={norm_market_cap:.2f}, "
-                     f"volatility={norm_volatility:.2f}, liquidity_ratio={norm_liquidity_ratio:.2f}")
+        # Calculate factors
+        norm_price_momentum = normalize_price_momentum(price_momentum)
+        norm_price_reversion = calculate_price_reversion(ohlcv_metrics)
+        norm_volume_acceleration = calculate_volume_acceleration(ohlcv_metrics)
+        norm_market_cap = normalize_market_cap(market_cap)
+        norm_volatility = normalize_volatility_for_lp(volatility, price_momentum)
+        norm_liquidity_ratio = normalize_liquidity_ratio(liquidity_ratio)
 
         # Calculate weighted score
         weighted_scores = {
             'price_momentum': norm_price_momentum * weights['price_momentum'],
-            'volume_trend': norm_volume_trend * weights['volume_trend'],
+            'price_reversion': norm_price_reversion * weights['price_reversion'],
+            'volume_acceleration': norm_volume_acceleration * weights['volume_acceleration'],
             'market_cap': norm_market_cap * weights['market_cap'],
             'volatility': norm_volatility * weights['volatility'],
             'liquidity_ratio': norm_liquidity_ratio * weights['liquidity_ratio']
         }
 
         raw_score = sum(weighted_scores.values())
-        logger.debug(f"Raw score: {raw_score:.2f}")
 
-        # Apply modified sigmoid function for final score
-        final_score = 100 / (1 + np.exp(-10 * (raw_score - 0.5)))
-
-        logger.debug(f"Final score: {final_score:.2f}")
+        # Apply sigmoid function for final score
+        final_score = 100 / (1 + np.exp(-12 * (raw_score - 0.5)))
 
         return final_score
     except Exception as e:
         logger.error(f"Error calculating multifactor score: {str(e)}")
         return 0
 
+def normalize_price_momentum(x):
+    return np.clip((np.tanh(x / 30) + 1) / 2, 0, 1)
+
+def calculate_price_reversion(ohlcv_metrics):
+    daily_data = ohlcv_metrics.get('day', {}).get('ohlcv_list', [])
+    if len(daily_data) < 3:
+        return 0.5  # Neutral score if not enough data
+    
+    closing_prices = [float(day[4]) for day in daily_data]
+    recent_change = (closing_prices[-1] - closing_prices[-2]) / closing_prices[-2]
+    avg_change = np.mean(np.diff(closing_prices) / closing_prices[:-1])
+    
+    reversion_potential = (avg_change - recent_change) / max(abs(avg_change), abs(recent_change))
+    return np.clip((np.tanh(reversion_potential) + 1) / 2, 0, 1)
+
+def calculate_volume_acceleration(ohlcv_metrics):
+    hourly_data = ohlcv_metrics.get('hour', {}).get('ohlcv_list', [])
+    if len(hourly_data) < 24:
+        return 0.5  # Neutral score if not enough data
+    
+    volumes = [float(hour[5]) for hour in hourly_data[-24:]]  # Last 24 hours
+    volume_change = (volumes[-1] - volumes[0]) / volumes[0]
+    volume_acceleration = (volumes[-1] - 2*volumes[-12] + volumes[-24]) / volumes[-24]
+    
+    return np.clip((np.tanh(volume_acceleration * 10) + 1) / 2, 0, 1)
+
+def normalize_market_cap(x):
+    return np.clip(np.log10(x) / 12, 0, 1)
+
+def normalize_volatility_for_lp(volatility, price_momentum):
+    optimal_volatility = 0.1
+    volatility_score = 1 - abs(volatility - optimal_volatility) / max(volatility, optimal_volatility)
+    return np.clip(volatility_score * 1.5, 0, 1)
+
+def normalize_liquidity_ratio(x):
+    return np.clip(x / 0.3, 0, 1)
 
 
 
