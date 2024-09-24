@@ -30,7 +30,20 @@ from arch import arch_model
 from json import JSONEncoder
 import threading
 from colorama import init, Fore, Back, Style
+from rich.progress import Progress, TextColumn, BarColumn, TimeRemainingColumn
+from rich.panel import Panel
+from rich.table import Table
+from rich.console import Console
+import time
+from contextlib import nullcontext
 
+
+data_pull_lock = threading.Lock()
+
+
+
+
+console = Console()
 # Initialize colorama
 init(autoreset=True)
 
@@ -155,132 +168,444 @@ def calculate_ohlcv_metrics(ohlcv_data):
         })
     return metrics
 
+
+console = Console()
+
 def collect_data():
-    console.print(Panel(Text("Starting data collection...", style="bold green")))
+    # Define scoring weights
+    weights = {
+            'price_momentum': 0.4,
+            'volume_trend': 0.4,
+            'market_cap': 0.05,
+            'volatility': 0.15,
+            'liquidity_ratio': 0.05
+    }
+
+    # Display score interpretation ranges and scoring weights at the beginning
+    score_ranges = f"""[bold underline]Score Interpretation[/bold underline]
+[green]80-100[/green]: Exceptional performance across all factors
+[light_green]60-80[/light_green]: Strong performance
+[yellow]40-60[/yellow]: Average performance
+[orange1]20-40[/orange1]: Below average performance
+[red]0-20[/red]: Poor performance
+
+[bold underline]Scoring System Weights[/bold underline]
+Price Momentum: {weights['price_momentum'] * 100:.0f}%
+Volume Trend: {weights['volume_trend'] * 100:.0f}%
+Market Cap: {weights['market_cap'] * 100:.0f}%
+Volatility: {weights['volatility'] * 100:.0f}%
+Liquidity Ratio: {weights['liquidity_ratio'] * 100:.0f}%
+"""
+    console.print(Panel(score_ranges, style="bold cyan"))
+
+    console.print(Panel("Starting data collection...", style="bold green"))
     all_data = []
     skipped_tokens = []
+    tokens_for_table = []
 
-    try:
-        trending_pools = get_trending_pools(network='solana', page=1)
-        if 'data' not in trending_pools:
-            console.print(f"[bold red]Unexpected response structure:[/bold red] {trending_pools}")
-            return
-    except Exception as e:
-        console.print(f"[bold red]Error fetching trending pools:[/bold red] {str(e)}")
-        return
+    # Determine if the current thread is the main thread
+    is_main_thread = threading.current_thread() == threading.main_thread()
+    if is_main_thread:
+        progress_context = Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeRemainingColumn(),
+            console=console,
+        )
+    else:
+        # Use a no-op context manager for the background thread
+        progress_context = nullcontext()
 
-    with console.status("[cyan]Processing pools...", spinner="dots") as status:
-        for index, pool in enumerate(trending_pools['data'], 1):
+    with progress_context as progress:
+        if is_main_thread:
+            total_tokens = 0
+            for page in [1, 2]:
+                try:
+                    trending_pools = get_trending_pools(network='solana', page=page)
+                    if 'data' not in trending_pools:
+                        console.print(f"[bold red]Unexpected response structure for page {page}:[/bold red] {trending_pools}")
+                        continue
+                    total_tokens += len(trending_pools['data'])
+                except Exception as e:
+                    console.print(f"[bold red]Error fetching trending pools for page {page}:[/bold red] {str(e)}")
+                    continue
+
+            overall_task = progress.add_task("[cyan]Collecting Data", total=total_tokens)
+        else:
+            total_tokens = 0
+            overall_task = None
+
+        for page in [1, 2]:
             try:
-                pool_attributes = pool['attributes']
-                token_name = pool_attributes.get('name', 'Unknown')
-                network = 'solana'
-                pool_address = pool_attributes.get('address', 'Unknown')
-                status.update(f"[cyan]Processing pool {index}: {token_name}")
-                
-                pool_info = get_pool_info(network, pool_address)
-                ohlcv_data = get_ohlcv_data(network, pool_address)
-                metrics = calculate_ohlcv_metrics(ohlcv_data)
-                
-                current_time = datetime.now(timezone.utc)
-                pool_created_at = datetime.fromisoformat(pool_attributes.get('pool_created_at', current_time.isoformat()))
-                pool_age_hours = (current_time - pool_created_at).total_seconds() / 3600
-
-                pool_data = {
-                    'timestamp': current_time.isoformat(),
-                    'token_name': token_name,
-                    'network': network,
-                    'token_price': float(pool_attributes.get('base_token_price_usd', 0)),
-                    'market_cap': float(pool_attributes.get('market_cap_usd', 0) or 0),
-                    'fdv': float(pool_attributes.get('fdv_usd', 0) or 0),
-                    'liquidity': float(pool_attributes.get('reserve_in_usd', 0) or 0),
-                    'volume_5m': float(pool_attributes.get('volume_usd', {}).get('m5', 0) or 0),
-                    'volume_1h': float(pool_attributes.get('volume_usd', {}).get('h1', 0) or 0),
-                    'volume_6h': float(pool_attributes.get('volume_usd', {}).get('h6', 0) or 0),
-                    'volume_24h': float(pool_attributes.get('volume_usd', {}).get('h24', 0) or 0),
-                    'price_change_5m': float(pool_attributes.get('price_change_percentage', {}).get('m5', 0) or 0),
-                    'price_change_1h': float(pool_attributes.get('price_change_percentage', {}).get('h1', 0) or 0),
-                    'price_change_6h': float(pool_attributes.get('price_change_percentage', {}).get('h6', 0) or 0),
-                    'price_change_24h': float(pool_attributes.get('price_change_percentage', {}).get('h24', 0) or 0),
-                    'transactions_5m_buys': pool_attributes.get('transactions', {}).get('m5', {}).get('buys', 0),
-                    'transactions_5m_sells': pool_attributes.get('transactions', {}).get('m5', {}).get('sells', 0),
-                    'transactions_1h_buys': pool_attributes.get('transactions', {}).get('h1', {}).get('buys', 0),
-                    'transactions_1h_sells': pool_attributes.get('transactions', {}).get('h1', {}).get('sells', 0),
-                    'transactions_6h_buys': pool_attributes.get('transactions', {}).get('h6', {}).get('buys', 0),
-                    'transactions_6h_sells': pool_attributes.get('transactions', {}).get('h6', {}).get('sells', 0),
-                    'transactions_24h_buys': pool_attributes.get('transactions', {}).get('h24', {}).get('buys', 0),
-                    'transactions_24h_sells': pool_attributes.get('transactions', {}).get('h24', {}).get('sells', 0),
-                    'pool_created_at': pool_created_at.isoformat(),
-                    'pool_age_hours': pool_age_hours,
-                }
-                
-                pool_data['market_cap'] = pool_data['market_cap'] or pool_data['fdv']
-                
-                pool_data.update(metrics)
-
-                all_data.append(pool_data)
-                console.print(f"Processed {token_name} / {network.upper()}: Price ${pool_data['token_price']:.6f}, Market Cap/FDV ${pool_data['market_cap']:,.2f}")
-                
-                time.sleep(5)
-            except KeyError as e:
-                log.warning(f"Skipping token {token_name} due to missing data: {str(e)}")
-                skipped_tokens.append(token_name)
-                console.print(f"[yellow]Skipping token {token_name} due to missing data: {str(e)}[/yellow]")
+                trending_pools = get_trending_pools(network='solana', page=page)
+                if 'data' not in trending_pools:
+                    continue
             except Exception as e:
-                log.error(f"Error processing pool {pool_attributes.get('address', 'Unknown')}: {str(e)}")
-                console.print(f"[red]Error processing pool {pool_attributes.get('address', 'Unknown')}: {str(e)}[/red]")
-                console.print(f"[yellow]Pool attributes: {json.dumps(pool_attributes, indent=2)}[/yellow]")
+                continue
 
-    df = pd.DataFrame(all_data)
-    
+            for pool in trending_pools['data']:
+                try:
+                    pool_attributes = pool['attributes']
+                    token_name = pool_attributes.get('name', 'Unknown')
+                    network = 'solana'
+                    pool_address = pool_attributes.get('address', 'Unknown')
+
+                    if is_main_thread and progress is not None and overall_task is not None:
+                        progress.update(overall_task, description=f"[cyan]Processing: {token_name}")
+                    else:
+                        console.print(f"Processing: {token_name}")
+
+                    # Fetch additional pool info and OHLCV data
+                    pool_info = get_pool_info(network, pool_address)
+                    ohlcv_data = get_ohlcv_data(network, pool_address)
+                    metrics = calculate_ohlcv_metrics(ohlcv_data)
+
+                    current_time = datetime.now(timezone.utc)
+                    pool_created_at_str = pool_attributes.get('pool_created_at', current_time.isoformat())
+                    try:
+                        pool_created_at = datetime.fromisoformat(pool_created_at_str.replace('Z', '+00:00'))
+                    except ValueError:
+                        pool_created_at = current_time
+                    pool_age_hours = (current_time - pool_created_at).total_seconds() / 3600
+
+                    # Extract necessary data
+                    price_change_percentage = pool_attributes.get('price_change_percentage', {})
+                    volume_usd = pool_attributes.get('volume_usd', {})
+                    transactions = pool_attributes.get('transactions', {})
+
+                    # Prepare pool_data with all specified fields
+                    pool_data = {
+                        'timestamp': current_time.isoformat(),
+                        'token_name': token_name,
+                        'network': network,
+                        'token_price': float(pool_attributes.get('base_token_price_usd', 0)),
+                        'market_cap': float(pool_attributes.get('market_cap_usd', 0) or 0),
+                        'fdv': float(pool_attributes.get('fdv_usd', 0) or 0),
+                        'liquidity': float(pool_attributes.get('reserve_in_usd', 0) or 0),
+                        'volume_5m': float(volume_usd.get('m5', 0) or 0),
+                        'volume_1h': float(volume_usd.get('h1', 0) or 0),
+                        'volume_6h': float(volume_usd.get('h6', 0) or 0),
+                        'volume_24h': float(volume_usd.get('h24', 0) or 0),
+                        'price_change_5m': float(price_change_percentage.get('m5', 0) or 0),
+                        'price_change_1h': float(price_change_percentage.get('h1', 0) or 0),
+                        'price_change_6h': float(price_change_percentage.get('h6', 0) or 0),
+                        'price_change_24h': float(price_change_percentage.get('h24', 0) or 0),
+                        'transactions_5m_buys': transactions.get('m5', {}).get('buys', 0),
+                        'transactions_5m_sells': transactions.get('m5', {}).get('sells', 0),
+                        'transactions_1h_buys': transactions.get('h1', {}).get('buys', 0),
+                        'transactions_1h_sells': transactions.get('h1', {}).get('sells', 0),
+                        'transactions_6h_buys': transactions.get('h6', {}).get('buys', 0),
+                        'transactions_6h_sells': transactions.get('h6', {}).get('sells', 0),
+                        'transactions_24h_buys': transactions.get('h24', {}).get('buys', 0),
+                        'transactions_24h_sells': transactions.get('h24', {}).get('sells', 0),
+                        'pool_created_at': pool_created_at.isoformat(),
+                        'pool_age_hours': pool_age_hours,
+                    }
+
+                    # Ensure 'market_cap' has a value
+                    pool_data['market_cap'] = pool_data['market_cap'] or pool_data['fdv']
+                    pool_data['effective_market_cap'] = pool_data['market_cap']
+
+                    # Add metrics from OHLCV data
+                    pool_data.update(metrics)
+
+                    # Extract scalar values for multifactor score
+                    price_momentum = float(pool_data['price_change_24h'])
+                    volume_1h = float(pool_data['volume_1h'])
+                    volume_24h = float(pool_data['volume_24h'])
+                    market_cap = float(pool_data['effective_market_cap'])
+                    
+                    # Calculate volatility using the existing method in your script
+                    historical_prices = [float(item[4]) for timeframe_data in ohlcv_data.values()
+                                         if 'data' in timeframe_data and 'attributes' in timeframe_data['data']
+                                         and 'ohlcv_list' in timeframe_data['data']['attributes']
+                                         for item in timeframe_data['data']['attributes']['ohlcv_list']]
+                    volatility = np.std(np.diff(np.log(historical_prices))) if len(historical_prices) > 1 else 0.1
+                    
+                    liquidity_ratio = volume_24h / market_cap if market_cap > 0 else 0
+
+                    try:
+                        mf_score = multifactor_score(price_momentum, volume_1h, volume_24h, market_cap, volatility, liquidity_ratio)
+                        pool_data['multifactor_score'] = mf_score
+                    except Exception as score_error:
+                        console.print(f"[yellow]Error calculating multifactor score for {token_name}: {str(score_error)}[/yellow]")
+                        mf_score = 0
+                        pool_data['multifactor_score'] = mf_score
+
+                    all_data.append(pool_data)
+
+                    # Collect data for the table
+                    tokens_for_table.append({
+                        'Token Name': token_name,
+                        'Network': network.upper(),
+                        'Price (USD)': f"${pool_data['token_price']:.6f}",
+                        'Market Cap (USD)': f"${pool_data['market_cap']:,.2f}",
+                        'Volume 24h (USD)': f"${pool_data['volume_24h']:,.2f}",
+                        'Liquidity (USD)': f"${pool_data['liquidity']:,.2f}",
+                        'Change 24h (%)': f"{pool_data['price_change_24h']:.2f}%",
+                        'Score': f"{mf_score:.2f}"
+                    })
+
+                    if is_main_thread and progress is not None and overall_task is not None:
+                        progress.update(overall_task, advance=1)
+                    else:
+                        pass  # Optionally, print minimal progress in the background thread
+
+                    time.sleep(1)  # Adjust delay as needed
+
+                except KeyError as e:
+                    skipped_tokens.append(token_name)
+                    console.print(f"[yellow]Skipping token {token_name} due to missing data: {str(e)}[/yellow]")
+                    if is_main_thread and progress is not None and overall_task is not None:
+                        progress.update(overall_task, advance=1)
+                    else:
+                        pass
+                except Exception as e:
+                    console.print(f"[red]Error processing pool {pool_attributes.get('address', 'Unknown')}: {str(e)}[/red]")
+                    console.print(f"[yellow]Pool attributes: {json.dumps(pool_attributes, indent=2)}[/yellow]")
+                    if is_main_thread and progress is not None and overall_task is not None:
+                        progress.update(overall_task, advance=1)
+                    else:
+                        pass
+
+        console.print(Panel("Data collection completed!", style="bold green"))
+
+        # Convert to DataFrame and sort by multifactor score
+        df = pd.DataFrame(all_data)
+        df = df.sort_values('multifactor_score', ascending=False)
+
+        # Save to CSV
+        file_exists = os.path.isfile('meme_coin_data.csv')
+        if not file_exists:
+            df.to_csv('meme_coin_data.csv', mode='w', header=True, index=False)
+            console.print(f"[green]Created new meme_coin_data.csv with {len(df)} records[/green]")
+        else:
+            df.to_csv('meme_coin_data.csv', mode='a', header=False, index=False)
+            console.print(f"[green]Appended {len(df)} new records to meme_coin_data.csv[/green]")
+
+        console.print(f"[yellow]Skipped {len(skipped_tokens)} tokens due to missing data: {', '.join(skipped_tokens)}[/yellow]")
+
+        if is_main_thread:
+            # Display the collected tokens in a table format
+            table = Table(title="Token Data", show_lines=True)
+
+            table.add_column("Token Name", style="bold cyan")
+            table.add_column("Network", style="bold magenta")
+            table.add_column("Price (USD)", justify="right")
+            table.add_column("Market Cap (USD)", justify="right")
+            table.add_column("Volume 24h (USD)", justify="right")
+            table.add_column("Liquidity (USD)", justify="right")
+            table.add_column("Change 24h (%)", justify="right")
+            table.add_column("Score", justify="right")
+
+            for token in tokens_for_table:
+                price_change_color = "green" if float(token['Change 24h (%)'].strip('%')) >= 0 else "red"
+                score_value = float(token['Score'])
+                score_color = (
+                    "green" if score_value >= 80 else
+                    "light_green" if score_value >= 60 else
+                    "yellow" if score_value >= 40 else
+                    "orange1" if score_value >= 20 else
+                    "red"
+                )
+
+                table.add_row(
+                    token['Token Name'],
+                    token['Network'],
+                    token['Price (USD)'],
+                    token['Market Cap (USD)'],
+                    token['Volume 24h (USD)'],
+                    token['Liquidity (USD)'],
+                    f"[{price_change_color}]{token['Change 24h (%)']}[/]",
+                    f"[{score_color}]{token['Score']}[/]"
+                )
+
+            console.print(table)
+
+            # Optionally, display the top 5 tokens with highest scores
+            top_5 = df.head(5)
+            top_table = Table(title="Top 5 Tokens by Multifactor Score", show_lines=True)
+
+            top_table.add_column("Rank", style="bold magenta")
+            top_table.add_column("Token Name", style="bold cyan")
+            top_table.add_column("Price (USD)", justify="right")
+            top_table.add_column("Market Cap (USD)", justify="right")
+            top_table.add_column("Volume 24h (USD)", justify="right")
+            top_table.add_column("Liquidity (USD)", justify="right")
+            top_table.add_column("Change 24h (%)", justify="right")
+            top_table.add_column("Score", justify="right")
+
+            for rank, (_, row) in enumerate(top_5.iterrows(), start=1):
+                price_change_color = "green" if row['price_change_24h'] >= 0 else "red"
+                score_color = (
+                    "green" if row['multifactor_score'] >= 80 else
+                    "light_green" if row['multifactor_score'] >= 60 else
+                    "yellow" if row['multifactor_score'] >= 40 else
+                    "orange1" if row['multifactor_score'] >= 20 else
+                    "red"
+                )
+                top_table.add_row(
+                    str(rank),
+                    row['token_name'],
+                    f"${row['token_price']:.6f}",
+                    f"${row['market_cap']:,.2f}",
+                    f"${row['volume_24h']:,.2f}",
+                    f"${row['liquidity']:,.2f}",
+                    f"[{price_change_color}]{row['price_change_24h']:.2f}%[/]",
+                    f"[{score_color}]{row['multifactor_score']:.2f}[/]"
+                )
+
+            console.print(top_table)
+
+        # Load data into the data manager if needed
+        data_manager.load_data()
+
+
+def display_summary(df):
+    console.print("\n[bold cyan]Data Collection Summary:[/bold cyan]")
+    console.print(f"Total Tokens Processed: {len(df)}")
+    console.print(f"\n[bold cyan]Score Distribution:[/bold cyan]")
+    console.print(f"0-20 (Low performing): [red]{len(df[df['multifactor_score'] <= 20])}[/red]")
+    console.print(f"21-40 (Below average): [yellow]{len(df[(df['multifactor_score'] > 20) & (df['multifactor_score'] <= 40)])}[/yellow]")
+    console.print(f"41-60 (Average): [cyan]{len(df[(df['multifactor_score'] > 40) & (df['multifactor_score'] <= 60)])}[/cyan]")
+    console.print(f"61-80 (Above average): [green]{len(df[(df['multifactor_score'] > 60) & (df['multifactor_score'] <= 80)])}[/green]")
+    console.print(f"81-100 (High performing): [bold green]{len(df[df['multifactor_score'] > 80])}[/bold green]")
+
+    console.print("\n[bold cyan]Top 10 Tokens by Score:[/bold cyan]")
+    top_10 = df.nlargest(10, 'multifactor_score')
+    for _, row in top_10.iterrows():
+        score = row['multifactor_score']
+        if score <= 20:
+            score_color = "red"
+        elif score <= 40:
+            score_color = "yellow"
+        elif score <= 60:
+            score_color = "cyan"
+        elif score <= 80:
+            score_color = "green"
+        else:
+            score_color = "bold green"
+        console.print(f"{row['token_name']:20} Score: [{score_color}]{score:.2f}[/{score_color}]")
+
+def process_pool_data(pool_attributes):
+    # This function would contain the detailed data processing logic
+    # Simplified for brevity
+    return {
+        'token_name': pool_attributes.get('name', 'Unknown'),
+        'token_price': float(pool_attributes.get('base_token_price_usd', 0)),
+        'market_cap': float(pool_attributes.get('market_cap_usd', 0) or 0),
+        # Add other necessary fields here
+    }
+
+def save_to_csv(df):
     file_exists = os.path.isfile('meme_coin_data.csv')
-    
     if not file_exists:
         df.to_csv('meme_coin_data.csv', mode='w', header=True, index=False)
-        console.print(f"[green]Created new meme_coin_data.csv with {len(df)} records[/green]")
+        console.print("[green]Created new meme_coin_data.csv[/green]")
     else:
         df.to_csv('meme_coin_data.csv', mode='a', header=False, index=False)
-        console.print(f"[green]Appended {len(df)} new records to meme_coin_data.csv[/green]")
+        console.print("[green]Appended new records to meme_coin_data.csv[/green]")
 
-    console.print(f"[yellow]Skipped {len(skipped_tokens)} tokens due to missing data: {', '.join(skipped_tokens)}[/yellow]")
-    
-    data_manager.load_data()
 
-def multifactor_score(data):
-    factors = {
-        'price_momentum': data['price_change_1h'],
-        'volume_trend': np.where((data['volume_24h'] > 0) & (data['volume_1h'] > 0), data['volume_1h'] / data['volume_24h'], 0),
-        'market_cap_rank': data['effective_market_cap'].rank(ascending=False),
-        'volatility': implement_garch(data, 60),  # 1-hour GARCH volatility
-        'liquidity_ratio': np.where((data['effective_market_cap'] > 0) & (data['volume_24h'] > 0), data['volume_24h'] / data['effective_market_cap'], 0)
-    }
-    weights = {k: 1/len(factors) for k in factors.keys()}  # Equal weights to start
-    return sum(factors[k] * weights[k] for k in factors)
 
-def implement_garch(df, timeframe_minutes):
-    price_col = 'price_change_1h'  # Use 1-hour price changes
-    
-    price_data = df[price_col].dropna()
-    returns = np.log(price_data + 1).diff().dropna()
-    
-    # Remove inf and NaN values
-    returns = returns[np.isfinite(returns)]
-    
-    if len(returns) < 100:
-        console.print(f"[yellow]Warning: Insufficient data for GARCH modeling. Using standard deviation.[/yellow]")
-        return returns.std() if len(returns) > 1 else 0
-    
+import numpy as np
+import logging
+
+logger = logging.getLogger(__name__)
+
+def multifactor_score(price_momentum, volume_1h, volume_24h, market_cap, volatility, liquidity_ratio):
     try:
+        # Define weights
+        weights = {
+            'price_momentum': 0.4,
+            'volume_trend': 0.4,
+            'market_cap': 0.05,
+            'volatility': 0.15,
+            'liquidity_ratio': 0.05
+        }
+
+        # Calculate volume trend using both 1h and 24h volumes
+        volume_1h_normalized = volume_1h / (volume_24h / 24)  # Normalize 1h volume against average hourly volume
+        volume_24h_normalized = volume_24h / market_cap  # 24h volume to market cap ratio
+        
+        # Combine 1h and 24h volume metrics with equal weight
+        volume_trend = (volume_1h_normalized * 0.5) + (volume_24h_normalized * 0.5)
+
+        # Normalize factors
+        norm_price_momentum = (np.tanh(price_momentum / 20) + 1) / 2  # Adjusted for typical daily % changes
+        norm_volume_trend = np.clip(volume_trend, 0, 1)  # Clip combined volume trend between 0 and 1
+        norm_market_cap = 1 - np.exp(-market_cap / 1e9)  # Favor smaller caps, but don't penalize large caps too much
+        norm_volatility = 1 / (1 + volatility / 0.5)  # Inverse relationship, 50% volatility gives 0.5 score
+        norm_liquidity_ratio = np.clip(liquidity_ratio / 0.1, 0, 1)  # 10% liquidity ratio is considered very good
+
+        logger.debug(f"Normalized factors: price_momentum={norm_price_momentum:.2f}, "
+                     f"volume_trend={norm_volume_trend:.2f}, market_cap={norm_market_cap:.2f}, "
+                     f"volatility={norm_volatility:.2f}, liquidity_ratio={norm_liquidity_ratio:.2f}")
+
+        # Calculate weighted score
+        weighted_scores = {
+            'price_momentum': norm_price_momentum * weights['price_momentum'],
+            'volume_trend': norm_volume_trend * weights['volume_trend'],
+            'market_cap': norm_market_cap * weights['market_cap'],
+            'volatility': norm_volatility * weights['volatility'],
+            'liquidity_ratio': norm_liquidity_ratio * weights['liquidity_ratio']
+        }
+
+        raw_score = sum(weighted_scores.values())
+        logger.debug(f"Raw score: {raw_score:.2f}")
+
+        # Apply modified sigmoid function for final score
+        final_score = 100 / (1 + np.exp(-10 * (raw_score - 0.5)))
+
+        logger.debug(f"Final score: {final_score:.2f}")
+
+        return final_score
+    except Exception as e:
+        logger.error(f"Error calculating multifactor score: {str(e)}")
+        return 0
+
+
+
+
+def implement_garch(historical_prices):
+    """
+    Calculates volatility using the GARCH model.
+    
+    Parameters:
+    - historical_prices (list): List of historical price data.
+    
+    Returns:
+    - volatility_forecast (float): The forecasted volatility.
+    """
+    try:
+        # Convert prices to a numpy array
+        historical_prices = np.array(historical_prices, dtype=float)
+        # Ensure prices are positive
+        historical_prices = historical_prices[historical_prices > 0]
+        if len(historical_prices) < 2:
+            console.print("[yellow]Warning: Not enough positive price data for volatility calculation.[/yellow]")
+            return 0
+
+        # Calculate log returns
+        returns = np.diff(np.log(historical_prices))
+        returns = returns[np.isfinite(returns)]  # Remove NaNs and infs
+
+        if len(returns) < 100:
+            console.print("[yellow]Warning: Insufficient data for GARCH modeling. Using standard deviation.[/yellow]")
+            return np.std(returns) if len(returns) > 1 else 0
+
         model = arch_model(returns, vol='GARCH', p=1, q=1)
         results = model.fit(disp='off')
         forecast = results.forecast(horizon=1)
         volatility_forecast = np.sqrt(forecast.variance.values[-1, :])[0]
-        
+
         console.print(f"[green]Successfully calculated GARCH volatility: {volatility_forecast:.4f}[/green]")
         return volatility_forecast
     except Exception as e:
         console.print(f"[yellow]Warning: GARCH modeling failed. Using standard deviation. Error: {str(e)}[/yellow]")
-        return returns.std() if len(returns) > 1 else 0
+        returns = np.diff(np.log(historical_prices))
+        return np.std(returns) if len(returns) > 1 else 0
 
 def kalman_trend(prices):
     kf = KalmanFilter(transition_matrices=[1], observation_matrices=[1], 
@@ -760,13 +1085,15 @@ def pull_data():
     global global_state
     print(f"\n{Fore.YELLOW}[SYS] Initiating Data Pull Sequence...")
     try:
-        collect_data()
-        global_state.last_pull_time = datetime.now()
-        print(f"{Fore.GREEN}[SYS] Data successfully extracted and processed!")
+        with data_pull_lock:
+            collect_data()
+            global_state.last_pull_time = datetime.now()
+            print(f"{Fore.GREEN}[SYS] Data successfully extracted and processed!")
     except Exception as e:
         print(f"{Fore.RED}[ERROR] Data pull failed: {str(e)}")
         console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")
     print(f"{Fore.CYAN}[INFO] Last pull time: {global_state.last_pull_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
 
 def background_data_pull():
     global global_state
@@ -774,16 +1101,17 @@ def background_data_pull():
         try:
             current_time = datetime.now()
             time_since_last_pull = current_time - global_state.last_pull_time
-            
+
             if time_since_last_pull >= timedelta(minutes=30):
                 print(f"\n{Fore.MAGENTA}[BACKGROUND] {Fore.YELLOW}Executing scheduled data pull...")
-                pull_data()
-            
+                pull_data()  # This function now uses the lock
+
             time.sleep(60)  # Check every minute
         except Exception as e:
             print(f"{Fore.RED}[ERROR] Background data pull error: {str(e)}")
             console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")
             time.sleep(60)  # Wait a minute before trying again
+
 
 def display_last_pull_time():
     global global_state
