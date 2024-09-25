@@ -1,0 +1,21 @@
+{
+    "timestamp": "2024-09-25T16:17:21.117207",
+    "recommendations": {
+        "Min Token 5M Price Change (%)": -4.83,
+        "Min Token 1H Price Change (%)": -6.73,
+        "Max Token 1 HR Price Change (%)": 36.6,
+        "Min Token 1H Volume": 143000.0,
+        "Min Token 24H Volume": 3672000.0,
+        "Min Token Age (hrs)": 34.0,
+        "Min Token Market Cap": 1012000.0
+    },
+    "explanations": {
+        "Min Token 5M Price Change (%)": "\n            Raw 10.0th percentile: -3.22%\n            Risk adjustment: 1.50x\n            Final value: -4.83%\n            ",
+        "Min Token 1H Price Change (%)": "\n            Raw 10.0th percentile: -4.48%\n            Risk adjustment: 1.50x\n            Final value: -6.73%\n            ",
+        "Max Token 1 HR Price Change (%)": "\n        Raw 95th percentile: 24.40%\n        Risk adjustment: 1.50x\n        Capped at 500%\n        Final value: 36.60%\n        ",
+        "Min Token 1H Volume": "\n            Raw 25th percentile: $95,494\n            Risk-adjusted value: $143,000\n            Minimum threshold: $50,000\n            Final value: $143,000\n            ",
+        "Min Token 24H Volume": "\n            Raw 25th percentile: $2,448,129\n            Risk-adjusted value: $3,672,000\n            Minimum threshold: $50,000\n            Final value: $3,672,000\n            ",
+        "Min Token Age (hrs)": "\n        Raw 10th percentile: 22.6 hours\n        Risk-adjusted value: 34.0 hours\n        Minimum threshold: 2 hours\n        Final value: 34.0 hours\n        ",
+        "Min Token Market Cap": "\n        Raw 10th percentile: $674,607\n        Risk-adjusted value: $1,012,000\n        Minimum threshold: $200,000\n        Final value: $1,012,000\n        Note: \n        "
+    }
+}
